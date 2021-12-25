@@ -1,46 +1,81 @@
+diff --git a/.gitignore b/.gitignore
+new file mode 100644
+index 00000000..efe9ce59
+--- /dev/null
++++ b/.gitignore
+@@ -0,0 +1,7 @@
++**/*~
++**/\#*
++**/*.o
++**/*.s
++**/a.out
++/tmp*
++/chibicc
+diff --git a/Makefile b/Makefile
+new file mode 100644
+index 00000000..e6a33985
+--- /dev/null
++++ b/Makefile
+@@ -0,0 +1,12 @@
++CFLAGS=-std=c11 -g -fno-common
++
++chibicc: main.o
++	$(CC) -o chibicc main.o $(LDFLAGS)
++
++test: chibicc
++	./test.sh
++
++clean:
++	rm -f chibicc *.o *~ tmp*
++
++.PHONY: test clean
 diff --git a/main.c b/main.c
-index c99ceac..358a4b1 100644
---- a/main.c
+new file mode 100644
+index 00000000..c99ceac8
+--- /dev/null
 +++ b/main.c
-@@ -7,9 +7,29 @@ int main(int argc, char **argv) {
-     return 1;
-   }
- 
-+  char *p = argv[1];
+@@ -0,0 +1,15 @@
++#include <stdio.h>
++#include <stdlib.h>
 +
-   printf("  .globl main\n");
-   printf("main:\n");
--  printf("  mov $%d, %%rax\n", atoi(argv[1]));
-+  printf("  mov $%ld, %%rax\n", strtol(p, &p, 10));
-+
-+  while (*p) {
-+    if (*p == '+') {
-+      p++;
-+      printf("  add $%ld, %%rax\n", strtol(p, &p, 10));
-+      continue;
-+    }
-+
-+    if (*p == '-') {
-+      p++;
-+      printf("  sub $%ld, %%rax\n", strtol(p, &p, 10));
-+      continue;
-+    }
-+
-+    fprintf(stderr, "unexpected character: '%c'\n", *p);
++int main(int argc, char **argv) {
++  if (argc != 2) {
++    fprintf(stderr, "%s: invalid number of arguments\n", argv[0]);
 +    return 1;
 +  }
 +
-   printf("  ret\n");
-   return 0;
- }
++  printf("  .globl main\n");
++  printf("main:\n");
++  printf("  mov $%d, %%rax\n", atoi(argv[1]));
++  printf("  ret\n");
++  return 0;
++}
 diff --git a/test.sh b/test.sh
-index 4e766a9..9550bbc 100755
---- a/test.sh
+new file mode 100755
+index 00000000..4e766a92
+--- /dev/null
 +++ b/test.sh
-@@ -18,5 +18,6 @@ assert() {
- 
- assert 0 0
- assert 42 42
-+assert 21 '5+20-4'
- 
- echo OK
+@@ -0,0 +1,22 @@
++#!/bin/bash
++assert() {
++  expected="$1"
++  input="$2"
++
++  ./chibicc "$input" > tmp.s || exit
++  gcc -static -o tmp tmp.s
++  ./tmp
++  actual="$?"
++
++  if [ "$actual" = "$expected" ]; then
++    echo "$input => $actual"
++  else
++    echo "$input => $expected expected, but got $actual"
++    exit 1
++  fi
++}
++
++assert 0 0
++assert 42 42
++
++echo OK
+
