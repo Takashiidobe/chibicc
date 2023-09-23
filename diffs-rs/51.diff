@@ -1,0 +1,266 @@
+diff --git a/src/codegen.rs b/src/codegen.rs
+index 7698d2a..005f1c4 100644
+--- a/src/codegen.rs
++++ b/src/codegen.rs
+@@ -226,6 +226,10 @@ impl<'a> Codegen<'a> {
+                 self.addr(node);
+                 self.load(&node.ty);
+             }
++            ExprKind::MemberAccess(_, _) => {
++                self.addr(node);
++                self.load(&node.ty);
++            }
+             ExprKind::Funcall(name, args) => {
+                 for arg in args {
+                     self.expr(arg);
+@@ -391,6 +395,10 @@ impl<'a> Codegen<'a> {
+                         self.expr(expr);
+                     }
+                 }
++            },
++            ExprKind::MemberAccess(expr, member) => {
++                self.addr(expr);
++                wln!(self, "  add ${}, %rax", member.offset);
+             }
+             _ => self.ctx.error_at(&expr.loc, "not an lvalue")
+         };
+diff --git a/src/lexer.rs b/src/lexer.rs
+index a02630e..58323d4 100644
+--- a/src/lexer.rs
++++ b/src/lexer.rs
+@@ -33,7 +33,7 @@ lazy_static! {
+             "if", "else",
+             "for", "while",
+             "sizeof",
+-            "int", "char"
++            "int", "char", "struct"
+         ].map(|k| k.as_bytes()).into()
+     };
+ }
+@@ -285,7 +285,7 @@ fn digit_to_number(digit: u8) -> u8 {
+ 
+ fn ispunct(c: u8) -> bool {
+     return c == b';' || c == b'=' || c == b'(' || c == b')' ||
+-        c == b'{' || c == b'}' || c == b',' || c == b'[' || c == b']' ||
++        c == b'{' || c == b'}' || c == b',' || c == b'.' || c == b'[' || c == b']' ||
+         c == b'+' || c == b'-' || c == b'*' || c == b'/' ||
+         c == b'<' || c == b'>' || c == b'&';
+ }
+diff --git a/src/parser.rs b/src/parser.rs
+index 9b4e804..aad8af6 100644
+--- a/src/parser.rs
++++ b/src/parser.rs
+@@ -14,9 +14,17 @@ pub enum TyKind {
+     Ptr(Rc<Ty>),
+     Fn(Rc<Ty>, Vec<Rc<Ty>>),
+     Array(Rc<Ty>, usize),
++    Struct(Vec<Rc<Member>>),
+     Unit
+ }
+ 
++#[derive(Debug)]
++pub struct Member {
++    pub name: AsciiStr,
++    pub ty: Rc<Ty>,
++    pub offset: usize
++}
++
+ #[derive(Debug)]
+ pub struct Ty {
+     pub kind: TyKind,
+@@ -33,6 +41,10 @@ impl Ty {
+         let base_size = base.size;
+         Rc::new(Ty { kind: TyKind::Array(base, len), size: base_size*len })
+     }
++    fn strct(members: Vec<Rc<Member>>) -> Rc<Ty> {
++        let size = members.iter().map(|m| m.ty.size).sum();
++        Rc::new(Ty { kind: TyKind::Struct(members), size })
++    }
+ 
+     fn is_integer_like(&self) -> bool {
+         match &self.kind {
+@@ -107,6 +119,8 @@ pub enum ExprKind {
+     Lt(P<ExprNode>, P<ExprNode>),
+     Le(P<ExprNode>, P<ExprNode>),
+ 
++    MemberAccess(P<ExprNode>, Rc<Member>),
++
+     Comma(Vec<P<ExprNode>>),
+     StmtExpr(P<StmtNode>),
+ 
+@@ -325,7 +339,7 @@ impl<'a> Parser<'a> {
+     }
+ 
+     fn peek_is_ty_name(&self) -> bool {
+-        self.peek_is("char") || self.peek_is("int")
++        self.peek_is("char") || self.peek_is("int") || self.peek_is("struct")
+     }
+ 
+     // declaration = declspec (declarator ("=" expr)? ("," declarator ("=" expr)?)*)? ";"
+@@ -369,15 +383,24 @@ impl<'a> Parser<'a> {
+         }
+     }
+ 
+-    // declspec = "int" | "char"
++    // declspec = "int" | "char" | "struct" struct-decl
+     fn declspec(&mut self) -> Rc<Ty> {
+         if self.peek_is("char") {
+             self.advance();
+             return Ty::char()
+         }
+ 
+-        self.skip("int");
+-        Ty::int()
++        if self.peek_is("int") {
++            self.advance();
++            return Ty::int();
++        }
++
++        if self.peek_is("struct") {
++            self.advance();
++            return self.struct_decl();
++        }
++
++        self.ctx.error_tok(self.peek(), "typename expected");
+     }
+ 
+     // declarator = "*"* ident type-suffix
+@@ -445,6 +468,38 @@ impl<'a> Parser<'a> {
+         return Ty::func(ret_ty, params);
+     }
+ 
++    fn struct_decl(&mut self) -> Rc<Ty> {
++        let mut members = Vec::new();
++        let mut offset = 0;
++
++        self.skip("{");
++        while !self.peek_is("}") {
++            let base_ty = self.declspec();
++            let mut i = 0;
++
++            while !self.peek_is(";") {
++                if i > 0 {
++                    self.skip(",");
++                }
++
++                let (ty, name) = self.declarator(base_ty.clone());
++                let size = ty.size;
++                members.push(Rc::new(Member {
++                    name,
++                    ty,
++                    offset,
++                }));
++                offset += size;
++
++                i+= 1;
++            }
++            self.advance(); // ;
++        }
++        self.advance(); // }
++
++        Ty::strct(members)
++    }
++
+     // expr-stmt = expr? ";"
+     fn expr_stmt(&mut self) -> StmtNode {
+         if self.peek_is(";") {
+@@ -707,17 +762,53 @@ impl<'a> Parser<'a> {
+         self.postfix()
+     }
+ 
+-    // postfix = "primary" ("[" expr "]")*
++    // postfix = "primary" ("[" expr | "." ident "]")*
+     fn postfix(&mut self) -> ExprNode {
+         let mut node = self.primary();
+-        while self.peek_is("[") {
+-            let loc = self.advance().loc;
+-            let idx = self.expr();
+-            self.skip("]");
+-            let expr = self.add_overload(P::new(node), P::new(idx), loc);
+-            node = self.synth_deref(P::new(expr), loc);
++        loop {
++            if self.peek_is("[") {
++                let loc = self.advance().loc;
++                let idx = self.expr();
++                self.skip("]");
++                let expr = self.add_overload(P::new(node), P::new(idx), loc);
++                node = self.synth_deref(P::new(expr), loc);
++
++                continue;
++            }
++
++            if self.peek_is(".") {
++                self.advance();
++                let loc = self.peek().loc;
++                let name = {
++                    let name_tok = self.peek();
++                    if !matches!(name_tok.kind, TokenKind::Ident) {
++                        self.ctx.error_tok(name_tok, "expected struct member name");
++                    }
++                    self.ctx.tok_source(name_tok)
++                };
++                let members = {
++                    match &node.ty.kind {
++                        TyKind::Struct(members) => members,
++                        _ => self.ctx.error_at(&node.loc, "not a struct"),
++                    }
++                };
++                let member = members.iter().find(|m| m.name == name).unwrap_or_else(||
++                    self.ctx.error_at(&loc, "no such member")
++                ).clone();
++
++                let ty = member.ty.clone();
++                node = ExprNode {
++                    kind: ExprKind::MemberAccess(Box::new(node), member),
++                    loc,
++                    ty,
++                };
++
++                self.advance();
++                continue;
++            }
++
++            return node;
+         }
+-        node
+     }
+ 
+     // primary = "(" "{" stmt+ "}" ")"
+diff --git a/test/struct.c b/test/struct.c
+new file mode 100644
+index 0000000..b0b198f
+--- /dev/null
++++ b/test/struct.c
+@@ -0,0 +1,32 @@
++#include "test.h"
++
++int main() {
++  ASSERT(1, ({ struct {int a; int b;} x; x.a=1; x.b=2; x.a; }));
++  ASSERT(2, ({ struct {int a; int b;} x; x.a=1; x.b=2; x.b; }));
++  ASSERT(1, ({ struct {char a; int b; char c;} x; x.a=1; x.b=2; x.c=3; x.a; }));
++  ASSERT(2, ({ struct {char a; int b; char c;} x; x.b=1; x.b=2; x.c=3; x.b; }));
++  ASSERT(3, ({ struct {char a; int b; char c;} x; x.a=1; x.b=2; x.c=3; x.c; }));
++
++  ASSERT(0, ({ struct {char a; char b;} x[3]; char *p=x; p[0]=0; x[0].a; }));
++  ASSERT(1, ({ struct {char a; char b;} x[3]; char *p=x; p[1]=1; x[0].b; }));
++  ASSERT(2, ({ struct {char a; char b;} x[3]; char *p=x; p[2]=2; x[1].a; }));
++  ASSERT(3, ({ struct {char a; char b;} x[3]; char *p=x; p[3]=3; x[1].b; }));
++
++  ASSERT(6, ({ struct {char a[3]; char b[5];} x; char *p=&x; x.a[0]=6; p[0]; }));
++  ASSERT(7, ({ struct {char a[3]; char b[5];} x; char *p=&x; x.b[0]=7; p[3]; }));
++
++  ASSERT(6, ({ struct { struct { char b; } a; } x; x.a.b=6; x.a.b; }));
++
++  ASSERT(8, ({ struct {int a;} x; sizeof(x); }));
++  ASSERT(16, ({ struct {int a; int b;} x; sizeof(x); }));
++  ASSERT(16, ({ struct {int a, b;} x; sizeof(x); }));
++  ASSERT(24, ({ struct {int a[3];} x; sizeof(x); }));
++  ASSERT(32, ({ struct {int a;} x[4]; sizeof(x); }));
++  ASSERT(48, ({ struct {int a[3];} x[2]; sizeof(x); }));
++  ASSERT(2, ({ struct {char a; char b;} x; sizeof(x); }));
++  ASSERT(9, ({ struct {char a; int b;} x; sizeof(x); }));
++  ASSERT(0, ({ struct {} x; sizeof(x); }));
++
++  printf("OK\n");
++  return 0;
++}

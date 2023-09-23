@@ -1,0 +1,198 @@
+diff --git a/.gitignore b/.gitignore
+index eee0367..c0822b8 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -1,3 +1,5 @@
++/.vscode/settings.json
++
+ /target
+ 
+ **/*~
+diff --git a/src/codegen.rs b/src/codegen.rs
+index 89c1bfa..91cfa4e 100644
+--- a/src/codegen.rs
++++ b/src/codegen.rs
+@@ -21,6 +21,13 @@ impl<'a> Codegen<'a> {
+     pub fn program(&mut self, node: &TopLevelNode) {
+         println!("  .globl main");
+         println!("main:");
++
++        // Prologue
++        println!("  push %rbp");
++        println!("  mov %rsp, %rbp");
++        println!("  sub $208, %rsp");
++        println!();
++
+         match node.kind {
+             TopLevelKind::Stmts(ref stmts) => {
+                 for stmt in stmts {
+@@ -28,6 +35,10 @@ impl<'a> Codegen<'a> {
+                 }
+             }
+         }
++
++        println!();
++        println!("  mov %rbp, %rsp");
++        println!("  pop %rbp");
+         println!("  ret");
+     }
+ 
+@@ -54,6 +65,17 @@ impl<'a> Codegen<'a> {
+                 self.expr(expr);
+                 println!("  neg %rax");
+             }
++            ExprKind::Var(_) => {
++                self.addr(node);
++                println!("  mov (%rax), %rax");
++            }
++            ExprKind::Assign(ref lhs, ref rhs) => {
++                self.addr(lhs);
++                self.push();
++                self.expr(rhs);
++                self.pop("%rdi");
++                println!("  mov %rax, (%rdi)");
++            }
+             ExprKind::Add(ref lhs, ref rhs) => {
+                 self.expr(rhs.as_ref());
+                 self.push();
+@@ -122,6 +144,16 @@ impl<'a> Codegen<'a> {
+         };
+     }
+ 
++    fn addr(&self, expr: &ExprNode) {
++        if let ExprKind::Var(name) = expr.kind {
++            let index: i64 = (name - b'a' + 1).into();
++            println!("  lea {}(%rbp), %rax", -index * 8);
++            return;
++        }
++        
++        panic!("not an lvalue: {:?}", expr);
++    }
++
+     pub fn sanity_checks(&self) {
+         if self.depth != 0 {
+             panic!("depth is not 0");
+diff --git a/src/lexer.rs b/src/lexer.rs
+index af447f3..4a7cf8e 100644
+--- a/src/lexer.rs
++++ b/src/lexer.rs
+@@ -3,7 +3,8 @@ use crate::errors::ErrorReporting;
+ #[derive(Debug)]
+ pub enum TokenKind {
+     Punct,
+-    Num { val: i32 },
++    Ident,
++    Num(i32),
+     Eof
+ }
+ 
+@@ -46,10 +47,18 @@ impl<'a> Lexer<'a> {
+               toks.push(Token {
+                   offset,
+                   length: count,
+-                  kind: TokenKind::Num { val },
++                  kind: TokenKind::Num(val),
+               });
+               offset += count;
+           }
++          else if c.is_ascii_alphabetic() {
++            toks.push(Token {
++                offset,
++                length: 1,
++                kind: TokenKind::Ident,
++            });
++            offset += 1;
++          }
+           else {
+               let punct_len = read_punct(&src[offset..]);
+               if punct_len > 0 {
+@@ -88,7 +97,7 @@ fn read_int(buf: &[u8]) -> (i32, usize) {
+ }
+ 
+ fn ispunct(c: u8) -> bool {
+-  return c == b';' || c == b'+' || c == b'-' || c == b'*' || c == b'/' || 
++  return c == b';' || c == b'=' || c == b'+' || c == b'-' || c == b'*' || c == b'/' || 
+       c == b'(' || c == b')' || c == b'<' || c == b'>';
+ }
+ 
+diff --git a/src/parser.rs b/src/parser.rs
+index 85eb216..43ea629 100644
+--- a/src/parser.rs
++++ b/src/parser.rs
+@@ -11,6 +11,7 @@ pub struct Node<Kind> {
+ #[derive(Debug)]
+ pub enum ExprKind {
+     Num(i32),
++    Var(u8),
+ 
+     Add(P<ExprNode>, P<ExprNode>),
+     Sub(P<ExprNode>, P<ExprNode>),
+@@ -22,6 +23,8 @@ pub enum ExprKind {
+     Ne(P<ExprNode>, P<ExprNode>),
+     Lt(P<ExprNode>, P<ExprNode>),
+     Le(P<ExprNode>, P<ExprNode>),
++
++    Assign(P<ExprNode>, P<ExprNode>),
+ }
+ 
+ #[derive(Debug)]
+@@ -81,9 +84,21 @@ impl<'a> Parser<'a> {
+         StmtNode { kind: StmtKind::Expr(expr) }
+     }
+ 
+-    // expr = equality
++    // expr = assign
+     fn expr(&mut self) -> ExprNode {
+-        self.equality()
++        self.assign()
++    }
++
++    // assign = equality ("=" assign)?
++    fn assign(&mut self) -> ExprNode {
++        let mut node = self.equality();
++        if self.tok_is("=") {
++            self.advance();
++            node = ExprNode {
++                kind: ExprKind::Assign(P::new(node), P::new(self.assign()))
++            };
++        }
++        node
+     }
+ 
+     // equality = relational ("==" relational | "!=" relational)*
+@@ -214,13 +229,18 @@ impl<'a> Parser<'a> {
+         self.primary()
+     }
+ 
+-    // primary = "(" expr ")" | num
++    // primary = "(" expr ")" | ident | num
+     fn primary(&mut self) -> ExprNode {
+         match self.peek().kind {
+-            TokenKind::Num { val } => {
++            TokenKind::Num(val) => {
+                 self.advance();
+                 return ExprNode { kind: ExprKind::Num(val) }
+             }
++            TokenKind::Ident => {
++                let node = ExprNode { kind: ExprKind::Var(self.src[self.peek().offset]) };
++                self.advance();
++                return node;
++            }
+             TokenKind::Punct => 
+                 if self.tok_is("(") {
+                     self.advance();
+diff --git a/test.sh b/test.sh
+index c887a1d..cbbdca8 100755
+--- a/test.sh
++++ b/test.sh
+@@ -52,6 +52,10 @@ assert 0 '1>=2;'
+ 
+ assert 3 '1; 2; 3;'
+ 
++assert 3 'a=3; a;'
++assert 8 'a=3; z=5; a+z;'
++assert 6 'a=b=3; a+b;'
++
+ rm -f tmp tmp.s
+ 
+ echo OK

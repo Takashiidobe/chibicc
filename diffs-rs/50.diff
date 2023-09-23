@@ -1,0 +1,90 @@
+diff --git a/src/codegen.rs b/src/codegen.rs
+index a237abe..7698d2a 100644
+--- a/src/codegen.rs
++++ b/src/codegen.rs
+@@ -315,6 +315,11 @@ impl<'a> Codegen<'a> {
+                 wln!(self, "  setl %al");
+                 wln!(self, "  movzb %al, %rax");
+             }
++            ExprKind::Comma(exprs) => {
++                for expr in exprs {
++                    self.expr(expr);
++                }
++            }
+             ExprKind::StmtExpr(body) => {
+                 if let StmtKind::Block(stmts) = &body.kind {
+                     for stmt in stmts {
+@@ -375,6 +380,17 @@ impl<'a> Codegen<'a> {
+             },
+             ExprKind::Deref(expr) => {
+                 self.expr(expr);
++            },
++            ExprKind::Comma(exprs) => {
++                let mut it = exprs.iter().peekable();
++                while let Some(expr) = it.next() {
++                    if it.peek().is_none() {
++                        self.addr(expr);
++                    }
++                    else {
++                        self.expr(expr);
++                    }
++                }
+             }
+             _ => self.ctx.error_at(&expr.loc, "not an lvalue")
+         };
+diff --git a/src/parser.rs b/src/parser.rs
+index 577f82f..9b4e804 100644
+--- a/src/parser.rs
++++ b/src/parser.rs
+@@ -107,6 +107,7 @@ pub enum ExprKind {
+     Lt(P<ExprNode>, P<ExprNode>),
+     Le(P<ExprNode>, P<ExprNode>),
+ 
++    Comma(Vec<P<ExprNode>>),
+     StmtExpr(P<StmtNode>),
+ 
+     Assign(P<ExprNode>, P<ExprNode>),
+@@ -457,9 +458,26 @@ impl<'a> Parser<'a> {
+         StmtNode { kind: StmtKind::Expr(expr), loc: loc, ty: Ty::unit() }
+     }
+ 
+-    // expr = assign
++    // expr = assign ("," expr)?
+     fn expr(&mut self) -> ExprNode {
+-        self.assign()
++        let loc = self.peek().loc;
++        let node = self.assign();
++        if !self.peek_is(",") {
++            return node;
++        }
++        let mut exprs = Vec::new();
++        exprs.push(P::new(node));
++        while self.peek_is(",") {
++            self.advance();
++            exprs.push(P::new(self.assign()));
++        }
++
++        let ty = exprs.last().unwrap().ty.clone();
++        ExprNode {
++            kind: ExprKind::Comma(exprs),
++            loc,
++            ty,
++        }
+     }
+ 
+     // assign = equality ("=" assign)?
+diff --git a/test/control.c b/test/control.c
+index 7e8a5d0..d7221e2 100644
+--- a/test/control.c
++++ b/test/control.c
+@@ -20,6 +20,10 @@ int main() {
+   ASSERT(10, ({ int i=0; while(i<10) i=i+1; i; }));
+   ASSERT(55, ({ int i=0; int j=0; while(i<=10) {j=i+j; i=i+1;} j; }));
+ 
++  ASSERT(3, (1,2,3));
++  ASSERT(5, ({ int i=2, j=3; (i=5,j)=6; i; }));
++  ASSERT(6, ({ int i=2, j=3; (i=5,j)=6; j; }));
++
+   printf("OK\n");
+   return 0;
+ }

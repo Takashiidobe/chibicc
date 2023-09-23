@@ -1,0 +1,120 @@
+diff --git a/src/parser.rs b/src/parser.rs
+index c0c36a8..d7ea5f6 100644
+--- a/src/parser.rs
++++ b/src/parser.rs
+@@ -472,7 +472,10 @@ impl<'a> Parser<'a> {
+     }
+ 
+     fn peek_is_ty_name(&self) -> bool {
+-        let name = self.peek_src();
++        self.is_ty_name(self.peek_src())
++    }
++
++    fn is_ty_name(&self, name: &[u8]) -> bool {
+         TY_KEYWORDS.contains(name) || self.find_typedef(name).is_some()
+     }
+ 
+@@ -628,6 +631,35 @@ impl<'a> Parser<'a> {
+         decl
+     }
+ 
++    // abstract-declarator = "*"* ("(" abstract-declarator ")")? type-suffix
++    fn abstract_declarator(&mut self, base_ty: Rc<Ty>) -> Rc<Ty> {
++        let mut ty = base_ty;
++        while self.peek_is("*") {
++            self.advance();
++            ty = Ty::ptr(ty);
++        }
++
++        if self.peek_is("(") {
++            self.advance();
++            self.begin_speculation();
++            self.abstract_declarator(Ty::unit());
++            self.skip(")");
++            ty = self.type_suffix(ty);
++            let after_suffix = self.tok_index;
++            self.end_speculation();
++            let res = self.abstract_declarator(ty);
++            self.skip_to_tok(after_suffix);
++            return res;
++        }
++
++        self.type_suffix(ty)
++    }
++
++    fn typename(&mut self) -> Rc<Ty> {
++        let base_ty = self.declspec();
++        self.abstract_declarator(base_ty)
++    }
++
+     // type-suffix = "(" func-params
+     //             | "[" num "]" type-suffix
+     //             | ε
+@@ -1066,6 +1098,7 @@ impl<'a> Parser<'a> {
+ 
+     // primary = "(" "{" stmt+ "}" ")"
+     //         | "(" expr ")"
++    //         | "sizeof" "(" type-name ")"
+     //         | "sizeof" unary
+     //         | ident func-args?
+     //         | str
+@@ -1077,10 +1110,17 @@ impl<'a> Parser<'a> {
+                 return ExprNode { kind: ExprKind::Num(val), loc, ty: Ty::int() }
+             },
+             TokenKind::Keyword => {
++                let loc = self.peek().loc;
+                 if self.peek_is("sizeof") {
+                     self.advance();
++                    if self.peek_is("(") && self.is_ty_name(self.la_src(1)) {
++                        self.advance();
++                        let ty = self.typename();
++                        self.skip(")");
++                        return synth_num(ty.size.try_into().unwrap(), loc);
++                    }
+                     let node = self.unary();
+-                    return synth_num(node.ty.size.try_into().unwrap(), node.loc);
++                    return synth_num(node.ty.size.try_into().unwrap(), loc);
+                 }
+             }
+             TokenKind::Str(ref str) => {
+@@ -1321,6 +1361,10 @@ impl<'a> Parser<'a> {
+         self.ctx.tok_source(self.peek())
+     }
+ 
++    fn la_src(&self, n: usize) -> &[u8] {
++        self.ctx.tok_source(self.la(n))
++    }
++
+     fn skip(&mut self, s: &str) -> &Token {
+         if !self.peek_is(s) {
+             self.ctx.error_tok(self.peek(), &format!("Expected {}", s));
+diff --git a/test/sizeof.c b/test/sizeof.c
+new file mode 100644
+index 0000000..e63bd6d
+--- /dev/null
++++ b/test/sizeof.c
+@@ -0,0 +1,24 @@
++#include "test.h"
++
++int main() {
++  ASSERT(1, sizeof(char));
++  ASSERT(2, sizeof(short));
++  ASSERT(2, sizeof(short int));
++  ASSERT(2, sizeof(int short));
++  ASSERT(4, sizeof(int));
++  ASSERT(8, sizeof(long));
++  ASSERT(8, sizeof(long int));
++  ASSERT(8, sizeof(long int));
++  ASSERT(8, sizeof(char *));
++  ASSERT(8, sizeof(int *));
++  ASSERT(8, sizeof(long *));
++  ASSERT(8, sizeof(int **));
++  ASSERT(8, sizeof(int(*)[4]));
++  ASSERT(32, sizeof(int*[4]));
++  ASSERT(16, sizeof(int[4]));
++  ASSERT(48, sizeof(int[3][4]));
++  ASSERT(8, sizeof(struct {int a; int b;}));
++
++  printf("OK\n");
++  return 0;
++}

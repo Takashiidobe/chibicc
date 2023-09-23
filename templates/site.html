@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html
+  xmlns="http://www.w3.org/1999/xhtml"
+  lang="$lang$"
+  xml:lang="$lang$"
+  $if(dir)$
+  dir="$dir$"
+  $endif$
+>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="generator" content="pandoc" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, user-scalable=yes"
+    />
+    $for(author-meta)$
+    <meta name="author" content="$author-meta$" />
+    $endfor$ $if(date-meta)$
+    <meta name="dcterms.date" content="$date-meta$" />
+    $endif$ $if(keywords)$
+    <meta name="keywords" content="$for(keywords)$$keywords$$sep$, $endfor$" />
+    $endif$
+
+    <title>$if(title-prefix)$$title-prefix$ – $endif$$pagetitle$</title>
+    <style>
+      :root {
+        --background-color: #fdfdfd;
+        --color: #111;
+        --code-color: #555;
+        --link-color: #0000ee;
+        --link-color-visited: #0000ee;
+        --link-color-active: #0000ee;
+        --blockquote-color: #828282;
+        --single-tick-color: #9E9E00;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --background-color: #010101;
+          --color: #eee;
+          --code-color: #555;
+          --link-color: #9E9EFF;
+          --link-color-visited: #D0ADF0;
+          --link-color-active: #FF9E9E;
+          --blockquote-color: #FF8C69;
+          --single-tick-color: #9E9E00;
+        }
+      }
+      body {
+        font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+        font-weight: 400;
+        background-color: var(--background-color);
+        color: var(--color);
+        -webkit-text-size-adjust: 100%;
+        font-feature-settings: "kern" 1;
+        font-kerning: normal;
+        margin: 0 auto;
+        max-width: 87.5%;
+        font-size: max(calc(14px + 0.2vw), calc(0.5vw));
+        padding: calc(5px + 0.2vw);
+      }
+      hr {
+        color: #bbb;
+        background-color: #bbb;
+        height: 1px;
+        flex: 0 1 auto;
+        margin: 1em 0;
+        padding: 0;
+        border: none;
+      }
+      a {
+        text-decoration: none;
+      }
+      a:hover {
+        text-decoration: underline;
+      }
+      pre {
+        background-color: #f6f8fa;
+        border-radius: 3px;
+        font-size: 85%;
+        line-height: 1.45;
+        overflow: auto;
+        padding: 16px;
+      }
+      code {
+        color: var(--single-tick-color);
+        border-radius: 3px;
+        font-size: 85%;
+        margin: 0;
+        word-wrap: break-word;
+        padding: 0.2em 0.4em;
+        font-family: SFMono-Regular, Consolas, Liberation Mono, Menlo, Courier,
+          monospace !important;
+      }
+      pre > code {
+        color: var(--code-color);
+        background-color: transparent;
+        border: 0;
+        display: inline;
+        line-height: inherit;
+        margin: 0;
+        overflow: visible;
+        padding: 0;
+        word-wrap: normal;
+        font-size: 100%;
+      }
+      .sourceCode {
+        overflow: auto !important;
+      }
+      blockquote {
+        margin-left: calc(1vw);
+        margin-top: calc(0vw);
+        margin-bottom: calc(1vw);
+        border-left-width: 3px;
+        padding: 0 1em;
+        color: var(--blockquote-color);
+        border-left: 4px solid #e8e8e8;
+        padding-left: calc(8px + 1vw);
+        font-size: 110%;
+        letter-spacing: -1px;
+        font-style: italic;
+      }
+      blockquote * {
+        font-style: normal !important;
+        letter-spacing: 0;
+      }
+      table {
+        color: var(--code-color);
+        border-spacing: 2px;
+        display: block;
+        font-size: 85%;
+        overflow: auto;
+        width: 100%;
+        margin-bottom: calc(1vw);
+        border-spacing: 0;
+        border-collapse: collapse;
+      }
+      td {
+        padding: 6px 13px;
+        border: 1px solid #dfe2e5;
+      }
+      th {
+        font-weight: 600;
+        padding: 6px 13px;
+        border: 1px solid #dfe2e5;
+      }
+      tr {
+        background-color: #fff;
+        border-top: 1px solid #c6cbd1;
+      }
+      table tr:nth-child(2n) {
+        background-color: #f6f8fa;
+      }
+      img {
+        max-width: 100%;
+      }
+      p {
+        line-height: 1.5;
+        font-size: 100%;
+      }
+      ul {
+        margin-top: 0;
+      }
+      li {
+        font-size: 100%;
+        line-height: 1.5;
+      }
+      li + li {
+        margin-top: 0.25em;
+      }
+      a {
+        color: var(--link-color);
+      }
+      a:active {
+        color: var(--link-color-active);
+      }
+      a:visited {
+        color: var(--link-color-visited);
+      }
+      h1 {
+        font-size: 125%;
+        margin: 0.67em 0;
+      }
+      h2 {
+        font-size: 112.5%;
+      }
+      h3 {
+        font-size: 100%;
+      }
+      h1,
+      h2 {
+        border-bottom: 1px solid #eaecef;
+        color: var(--color);
+      }
+    </style>
+    $if(highlighting-css)$
+    <style>
+      $highlighting-css$
+    </style>
+    $endif$ $for(css)$
+    <link rel="stylesheet" href="$css$" />
+    $endfor$ $if(math)$ $math$ $endif$
+    <!--[if lt IE 9]>
+      <script src="//cdnjs.cloudflare.com/ajax/libs/html5shiv/3.7.3/html5shiv-printshiv.min.js"></script>
+    <![endif]-->
+    $for(header-includes)$ $header-includes$ $endfor$
+  </head>
+  <body>
+    $for(include-before)$ $include-before$ $endfor$
+    $if(title)$
+    <header id="title-block-header">
+      <h1 class="title">$title$</h1>
+      $if(subtitle)$
+      <p class="subtitle">$subtitle$</p>
+      $endif$ $for(author)$
+      <p class="author">$author$</p>
+      $endfor$ $if(date)$
+      <p class="date">Date: $date$</p>
+      $endif$
+    </header>
+    $endif$ $if(toc)$
+    <h2>Table of Contents</h1>
+    <nav id="$idprefix$TOC" role="doc-toc">$table-of-contents$</nav>
+    $endif$ $body$ $for(include-after)$ $include-after$ $endfor$
+  </body>
+</html>

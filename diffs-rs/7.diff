@@ -1,0 +1,624 @@
+diff --git a/src/codegen.rs b/src/codegen.rs
+index f9627d2..89c1bfa 100644
+--- a/src/codegen.rs
++++ b/src/codegen.rs
+@@ -1,118 +1,130 @@
+ use crate::errors::ErrorReporting;
+-use crate::parser::{Node, NodeKind};
++use crate::parser::{TopLevelNode, TopLevelKind, StmtNode, StmtKind, ExprNode, ExprKind};
+ 
+ pub struct Codegen<'a> {
+-  src: &'a [u8],
+-  depth: i64,
++    src: &'a [u8],
++    depth: i64,
+ }
+ 
+ impl<'a> ErrorReporting for Codegen<'a> {
+-  fn src(&self) -> &[u8] { self.src }
++    fn src(&self) -> &[u8] { self.src }
+ }
+ 
+ impl<'a> Codegen<'a> {
+-  pub fn new(src: &'a [u8]) -> Self {
+-      Self {
+-          src,
+-          depth: 0
+-      }
+-  }
++    pub fn new(src: &'a [u8]) -> Self {
++        Self {
++            src,
++            depth: 0
++        }
++    }
+ 
+-  pub fn program(&mut self, node: &Node) {
+-      println!("  .globl main");
+-      println!("main:");
+-      self.expr(node);
+-      println!("  ret");
+-  }
++    pub fn program(&mut self, node: &TopLevelNode) {
++        println!("  .globl main");
++        println!("main:");
++        match node.kind {
++            TopLevelKind::Stmts(ref stmts) => {
++                for stmt in stmts {
++                    self.stmt(stmt)
++                }
++            }
++        }
++        println!("  ret");
++    }
+ 
+-  fn push(&mut self) {
+-      println!("  push %rax");
+-      self.depth += 1;
+-  }
++    fn stmt(&mut self, node: &StmtNode) {
++        match node.kind {
++            StmtKind::Expr(ref expr) => self.expr(expr),
++        }
++    }
+ 
+-  fn pop(&mut self, arg: &str) {
+-      println!("  pop {}", arg);
+-      self.depth -= 1;
+-  }
++    fn push(&mut self) {
++        println!("  push %rax");
++        self.depth += 1;
++    }
+ 
+-  fn expr(&mut self, node: &Node) {
+-      match node.kind {
+-          NodeKind::Num { val } => println!("  mov ${}, %rax", val),
+-          NodeKind::Neg { ref expr } => {
+-              self.expr(expr);
+-              println!("  neg %rax");
+-          }
+-          NodeKind::Add { ref lhs, ref rhs } => {
+-              self.expr(rhs.as_ref());
+-              self.push();
+-              self.expr(lhs.as_ref());
+-              self.pop("%rdi");
+-              println!("  add %rdi, %rax");
+-          },
+-          NodeKind::Sub { ref lhs, ref rhs } => {
+-              self.expr(rhs.as_ref());
+-              self.push();
+-              self.expr(lhs.as_ref());
+-              self.pop("%rdi");
+-              println!("  sub %rdi, %rax");
+-          },
+-          NodeKind::Mul { ref lhs, ref rhs } => {
+-              self.expr(rhs.as_ref());
+-              self.push();
+-              self.expr(lhs.as_ref());
+-              self.pop("%rdi");
+-              println!("  imul %rdi, %rax");
+-          },
+-          NodeKind::Div { ref lhs, ref rhs } => {
+-              self.expr(rhs.as_ref());
+-              self.push();
+-              self.expr(lhs.as_ref());
+-              self.pop("%rdi");
+-              println!("  cqo");
+-              println!("  idiv %rdi, %rax");
+-          },
+-          NodeKind::Eq { ref lhs, ref rhs } => {
+-              self.expr(rhs.as_ref());
+-              self.push();
+-              self.expr(lhs.as_ref());
+-              self.pop("%rdi");
+-              println!("  cmp %rdi, %rax");
+-              println!("  sete %al");
+-              println!("  movzb %al, %rax");
+-          },
+-          NodeKind::Ne { ref lhs, ref rhs } => {
+-              self.expr(rhs.as_ref());
+-              self.push();
+-              self.expr(lhs.as_ref());
+-              self.pop("%rdi");
+-              println!("  cmp %rdi, %rax");
+-              println!("  setne %al");
+-              println!("  movzb %al, %rax");
+-          },
+-          NodeKind::Le { ref lhs, ref rhs } => {
+-              self.expr(rhs.as_ref());
+-              self.push();
+-              self.expr(lhs.as_ref());
+-              self.pop("%rdi");
+-              println!("  cmp %rdi, %rax");
+-              println!("  setle %al");
+-              println!("  movzb %al, %rax");
+-          },
+-          NodeKind::Lt { ref lhs, ref rhs } => {
+-              self.expr(rhs.as_ref());
+-              self.push();
+-              self.expr(lhs.as_ref());
+-              self.pop("%rdi");
+-              println!("  cmp %rdi, %rax");
+-              println!("  setl %al");
+-              println!("  movzb %al, %rax");
+-          },
+-      };
+-  }
++    fn pop(&mut self, arg: &str) {
++        println!("  pop {}", arg);
++        self.depth -= 1;
++    }
++
++    fn expr(&mut self, node: &ExprNode) {
++        match node.kind {
++            ExprKind::Num(val) => println!("  mov ${}, %rax", val),
++            ExprKind::Neg(ref expr) => {
++                self.expr(expr);
++                println!("  neg %rax");
++            }
++            ExprKind::Add(ref lhs, ref rhs) => {
++                self.expr(rhs.as_ref());
++                self.push();
++                self.expr(lhs.as_ref());
++                self.pop("%rdi");
++                println!("  add %rdi, %rax");
++            },
++            ExprKind::Sub(ref lhs, ref rhs) => {
++                self.expr(rhs.as_ref());
++                self.push();
++                self.expr(lhs.as_ref());
++                self.pop("%rdi");
++                println!("  sub %rdi, %rax");
++            },
++            ExprKind::Mul(ref lhs, ref rhs) => {
++                self.expr(rhs.as_ref());
++                self.push();
++                self.expr(lhs.as_ref());
++                self.pop("%rdi");
++                println!("  imul %rdi, %rax");
++            },
++            ExprKind::Div(ref lhs, ref rhs) => {
++                self.expr(rhs.as_ref());
++                self.push();
++                self.expr(lhs.as_ref());
++                self.pop("%rdi");
++                println!("  cqo");
++                println!("  idiv %rdi, %rax");
++            },
++            ExprKind::Eq(ref lhs, ref rhs) => {
++                self.expr(rhs.as_ref());
++                self.push();
++                self.expr(lhs.as_ref());
++                self.pop("%rdi");
++                println!("  cmp %rdi, %rax");
++                println!("  sete %al");
++                println!("  movzb %al, %rax");
++            },
++            ExprKind::Ne(ref lhs, ref rhs) => {
++                self.expr(rhs.as_ref());
++                self.push();
++                self.expr(lhs.as_ref());
++                self.pop("%rdi");
++                println!("  cmp %rdi, %rax");
++                println!("  setne %al");
++                println!("  movzb %al, %rax");
++            },
++            ExprKind::Le(ref lhs, ref rhs) => {
++                self.expr(rhs.as_ref());
++                self.push();
++                self.expr(lhs.as_ref());
++                self.pop("%rdi");
++                println!("  cmp %rdi, %rax");
++                println!("  setle %al");
++                println!("  movzb %al, %rax");
++            },
++            ExprKind::Lt(ref lhs, ref rhs) => {
++                self.expr(rhs.as_ref());
++                self.push();
++                self.expr(lhs.as_ref());
++                self.pop("%rdi");
++                println!("  cmp %rdi, %rax");
++                println!("  setl %al");
++                println!("  movzb %al, %rax");
++            }
++        };
++    }
+ 
+-  pub fn sanity_checks(&self) {
+-    if self.depth != 0 {
+-      panic!("depth is not 0");
++    pub fn sanity_checks(&self) {
++        if self.depth != 0 {
++            panic!("depth is not 0");
++        }
+     }
+-  }
+ }
+diff --git a/src/lexer.rs b/src/lexer.rs
+index 67aaaf4..af447f3 100644
+--- a/src/lexer.rs
++++ b/src/lexer.rs
+@@ -88,7 +88,7 @@ fn read_int(buf: &[u8]) -> (i32, usize) {
+ }
+ 
+ fn ispunct(c: u8) -> bool {
+-  return c == b'+' || c == b'-' || c == b'*' || c == b'/' || 
++  return c == b';' || c == b'+' || c == b'-' || c == b'*' || c == b'/' || 
+       c == b'(' || c == b')' || c == b'<' || c == b'>';
+ }
+ 
+diff --git a/src/main.rs b/src/main.rs
+index 06e4f81..35b9091 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -21,7 +21,7 @@ fn main() {
+ 
+     let mut parser = Parser::new(src, &toks);
+ 
+-    let node = parser.expr();
++    let node = parser.stmts();
+     parser.ensure_done();
+ 
+     let mut codegen = Codegen::new(src);
+diff --git a/src/parser.rs b/src/parser.rs
+index 1036677..85eb216 100644
+--- a/src/parser.rs
++++ b/src/parser.rs
+@@ -3,25 +3,41 @@ use crate::errors::ErrorReporting;
+ 
+ pub type P<A> = Box<A>;
+ 
+-pub enum NodeKind {
+-    Num { val: i32 },
+-
+-    Add { lhs: P<Node>, rhs: P<Node> },
+-    Sub { lhs: P<Node>, rhs: P<Node> },
+-    Mul { lhs: P<Node>, rhs: P<Node> },
+-    Div { lhs: P<Node>, rhs: P<Node> },
+-    Neg { expr: P<Node> },
+-
+-    Eq { lhs: P<Node>, rhs: P<Node> },
+-    Ne { lhs: P<Node>, rhs: P<Node> },
+-    Lt { lhs: P<Node>, rhs: P<Node> },
+-    Le { lhs: P<Node>, rhs: P<Node> },
++#[derive(Debug)]
++pub struct Node<Kind> {
++    pub kind: Kind,
+ }
+ 
+-pub struct Node {
+-    pub kind: NodeKind
++#[derive(Debug)]
++pub enum ExprKind {
++    Num(i32),
++
++    Add(P<ExprNode>, P<ExprNode>),
++    Sub(P<ExprNode>, P<ExprNode>),
++    Mul(P<ExprNode>, P<ExprNode>),
++    Div(P<ExprNode>, P<ExprNode>),
++    Neg(P<ExprNode>),
++
++    Eq(P<ExprNode>, P<ExprNode>),
++    Ne(P<ExprNode>, P<ExprNode>),
++    Lt(P<ExprNode>, P<ExprNode>),
++    Le(P<ExprNode>, P<ExprNode>),
++}
++
++#[derive(Debug)]
++pub enum StmtKind {
++    Expr(ExprNode)
++}
++
++#[derive(Debug)]
++pub enum TopLevelKind {
++    Stmts(Vec<StmtNode>)
+ }
+ 
++pub type ExprNode = Node<ExprKind>;
++pub type StmtNode = Node<StmtKind>;
++pub type TopLevelNode = Node<TopLevelKind>;
++
+ pub struct Parser<'a> {
+     src: &'a [u8],
+     toks: &'a [Token],
+@@ -44,32 +60,47 @@ impl<'a> Parser<'a> {
+         }
+     }
+     
++    // stmts = stmt+
++    pub fn stmts(&mut self) -> TopLevelNode {
++        let mut stmts = Vec::new();
++        while !self.is_done() {
++            stmts.push(self.stmt())
++        }
++        TopLevelNode { kind: TopLevelKind::Stmts(stmts) }
++    }
++
++    // stmt = expr-stmt
++    fn stmt(&mut self) -> StmtNode {
++        self.expr_stmt()
++    }
++    
++    // expr-stmt = expr ";"
++    fn expr_stmt(&mut self) -> StmtNode {
++        let expr = self.expr();
++        self.skip(";");
++        StmtNode { kind: StmtKind::Expr(expr) }
++    }
++
+     // expr = equality
+-    pub fn expr(&mut self) -> Node {
++    fn expr(&mut self) -> ExprNode {
+         self.equality()
+     }
+ 
+     // equality = relational ("==" relational | "!=" relational)*
+-    fn equality(&mut self) -> Node {
++    fn equality(&mut self) -> ExprNode {
+         let mut node = self.relational();
+         
+         loop {
+             if self.tok_is("==") {
+                 self.advance();
+-                node = Node {
+-                    kind: NodeKind::Eq { 
+-                        lhs: P::new(node), 
+-                        rhs: P::new(self.relational()) 
+-                    }
++                node = ExprNode {
++                    kind: ExprKind::Eq(P::new(node), P::new(self.relational()))
+                 };
+             }
+             else if self.tok_is("!=") {
+                 self.advance();
+-                node = Node {
+-                    kind: NodeKind::Ne { 
+-                        lhs: P::new(node), 
+-                        rhs: P::new(self.relational()) 
+-                    }
++                node = ExprNode {
++                    kind: ExprKind::Ne(P::new(node), P::new(self.relational()))
+                 };
+             }
+             else {
+@@ -81,44 +112,32 @@ impl<'a> Parser<'a> {
+     }
+ 
+     // relational = add ("<" add | "<=" add | ">" add | ">=" add)*
+-    fn relational(&mut self) -> Node {
++    fn relational(&mut self) -> ExprNode {
+         let mut node = self.add();
+         
+         loop {
+             if self.tok_is("<") {
+                 self.advance();
+-                node = Node {
+-                    kind: NodeKind::Lt { 
+-                        lhs: P::new(node), 
+-                        rhs: P::new(self.add()) 
+-                    }
++                node = ExprNode {
++                    kind: ExprKind::Lt(P::new(node), P::new(self.add()))
+                 };
+             }
+             else if self.tok_is("<=") {
+                 self.advance();
+-                node = Node {
+-                    kind: NodeKind::Le { 
+-                        lhs: P::new(node), 
+-                        rhs: P::new(self.add()) 
+-                    }
++                node = ExprNode {
++                    kind: ExprKind::Le(P::new(node), P::new(self.add()) )
+                 };
+             }
+             else if self.tok_is(">") {
+                 self.advance();
+-                node = Node {
+-                    kind: NodeKind::Lt { 
+-                        lhs: P::new(self.add()),
+-                        rhs: P::new(node)
+-                    }
++                node = ExprNode {
++                    kind: ExprKind::Lt(P::new(self.add()), P::new(node))
+                 };
+             }
+             else if self.tok_is(">=") {
+                 self.advance();
+-                node = Node {
+-                    kind: NodeKind::Le { 
+-                        lhs: P::new(self.add()),
+-                        rhs: P::new(node)
+-                    }
++                node = ExprNode {
++                    kind: ExprKind::Le(P::new(self.add()), P::new(node))
+                 };
+             }
+             else {
+@@ -130,26 +149,20 @@ impl<'a> Parser<'a> {
+     }
+ 
+     // add = mul ("+" mul | "-" mul)*
+-    fn add(&mut self) -> Node {
++    fn add(&mut self) -> ExprNode {
+         let mut node = self.mul();
+         
+         loop {
+             if self.tok_is("+") {
+                 self.advance();
+-                node = Node {
+-                    kind: NodeKind::Add { 
+-                        lhs: P::new(node), 
+-                        rhs: P::new(self.mul()) 
+-                    }
++                node = ExprNode {
++                    kind: ExprKind::Add(P::new(node), P::new(self.mul()))
+                 };
+             }
+             else if self.tok_is("-") {
+                 self.advance();
+-                node = Node {
+-                    kind: NodeKind::Sub { 
+-                        lhs: P::new(node), 
+-                        rhs: P::new(self.mul()) 
+-                    }
++                node = ExprNode {
++                    kind: ExprKind::Sub(P::new(node), P::new(self.mul()))
+                 };
+             }
+             else {
+@@ -161,26 +174,20 @@ impl<'a> Parser<'a> {
+     }
+ 
+     // mul = unary ("*" unary | "/" unary)*
+-    fn mul(&mut self) -> Node {
++    fn mul(&mut self) -> ExprNode {
+         let mut node = self.unary();
+         
+         loop {
+             if self.tok_is("*") {
+                 self.advance();
+-                node = Node {
+-                    kind: NodeKind::Mul { 
+-                        lhs: P::new(node), 
+-                        rhs: P::new(self.unary()) 
+-                    }
++                node = ExprNode {
++                    kind: ExprKind::Mul(P::new(node), P::new(self.unary()))
+                 };
+             }
+             else if self.tok_is("/") {
+                 self.advance();
+-                node = Node {
+-                    kind: NodeKind::Div { 
+-                        lhs: P::new(node), 
+-                        rhs: P::new(self.unary()) 
+-                    }
++                node = ExprNode {
++                    kind: ExprKind::Div(P::new(node), P::new(self.unary()))
+                 };
+             }
+             else {
+@@ -193,7 +200,7 @@ impl<'a> Parser<'a> {
+ 
+     // unary = ("+" | "-") unary
+     //       | primary
+-    fn unary(&mut self) -> Node {
++    fn unary(&mut self) -> ExprNode {
+         if self.tok_is("+") {
+             self.advance();
+             return self.unary()
+@@ -201,18 +208,18 @@ impl<'a> Parser<'a> {
+         
+         if self.tok_is("-") {
+             self.advance();
+-            return Node { kind: NodeKind::Neg { expr: P::new(self.unary()) }}
++            return ExprNode { kind: ExprKind::Neg(P::new(self.unary())) }
+         }
+ 
+         self.primary()
+     }
+ 
+     // primary = "(" expr ")" | num
+-    fn primary(&mut self) -> Node {
++    fn primary(&mut self) -> ExprNode {
+         match self.peek().kind {
+             TokenKind::Num { val } => {
+                 self.advance();
+-                return Node { kind: NodeKind::Num { val } }
++                return ExprNode { kind: ExprKind::Num(val) }
+             }
+             TokenKind::Punct => 
+                 if self.tok_is("(") {
+@@ -246,10 +253,16 @@ impl<'a> Parser<'a> {
+         self.advance();
+     }
+ 
+-    pub fn ensure_done(&self) {
++    fn is_done(&self) -> bool {
+         match self.peek().kind {
+-            TokenKind::Eof => {},
+-            _ => self.error_tok(self.peek(), "extra token")
++            TokenKind::Eof => true,
++            _ => false
++        }
++    }
++
++    pub fn ensure_done(&self) {
++        if !self.is_done() {
++            self.error_tok(self.peek(), "extra token")
+         }
+     }
+ }
+diff --git a/test.sh b/test.sh
+index 625856c..c887a1d 100755
+--- a/test.sh
++++ b/test.sh
+@@ -20,35 +20,37 @@ cargo build || exit
+ 
+ export RUST_BACKTRACE=1
+ 
+-assert 0 0
+-assert 42 42
+-assert 21 '5+20-4'
+-assert 41 ' 12 +  34 - 5'
+-assert 47 '5+6*7'
+-assert 15 '5*(9-6)'
+-assert 4 '(3+5)/2'
+-assert 10 '-10+20'
+-assert 10 '- -10'
+-assert 10 '- - +10'
+-
+-assert 0 '0==1'
+-assert 1 '42==42'
+-assert 1 '0!=1'
+-assert 0 '42!=42'
+-
+-assert 1 '0<1'
+-assert 0 '1<1'
+-assert 0 '2<1'
+-assert 1 '0<=1'
+-assert 1 '1<=1'
+-assert 0 '2<=1'
+-
+-assert 1 '1>0'
+-assert 0 '1>1'
+-assert 0 '1>2'
+-assert 1 '1>=0'
+-assert 1 '1>=1'
+-assert 0 '1>=2'
++assert 0 '0;'
++assert 42 '42;'
++assert 21 '5+20-4;'
++assert 41 ' 12 + 34 - 5 ;'
++assert 47 '5+6*7;'
++assert 15 '5*(9-6);'
++assert 4 '(3+5)/2;'
++assert 10 '-10+20;'
++assert 10 '- -10;'
++assert 10 '- - +10;'
++
++assert 0 '0==1;'
++assert 1 '42==42;'
++assert 1 '0!=1;'
++assert 0 '42!=42;'
++
++assert 1 '0<1;'
++assert 0 '1<1;'
++assert 0 '2<1;'
++assert 1 '0<=1;'
++assert 1 '1<=1;'
++assert 0 '2<=1;'
++
++assert 1 '1>0;'
++assert 0 '1>1;'
++assert 0 '1>2;'
++assert 1 '1>=0;'
++assert 1 '1>=1;'
++assert 0 '1>=2;'
++
++assert 3 '1; 2; 3;'
+ 
+ rm -f tmp tmp.s
+ 

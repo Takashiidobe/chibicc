@@ -1,0 +1,103 @@
+diff --git a/src/lexer.rs b/src/lexer.rs
+index dc39e4e..b8dcaae 100644
+--- a/src/lexer.rs
++++ b/src/lexer.rs
+@@ -27,15 +27,20 @@ pub struct Token {
+ }
+ 
+ lazy_static! {
+-    static ref KEYWORDS: HashSet<&'static [u8]> = [
+-        "return",
+-        "if", "else",
+-        "for", "while",
+-        "sizeof",
+-        "long", "int", "short", "char",
+-        "struct", "union"
++    pub static ref TY_KEYWORDS: HashSet<&'static [u8]> = [
++        "void", "char", "short", "int", "long", "struct", "union"
+     ].map(|k| k.as_bytes()).into();
+ 
++    static ref KEYWORDS: HashSet<&'static [u8]> = {
++        let others: HashSet<&'static [u8]> = [
++            "return",
++            "if", "else",
++            "for", "while",
++            "sizeof"
++        ].map(|k| k.as_bytes()).into();
++        others.union(&TY_KEYWORDS).cloned().collect()
++    };
++
+     static ref PUNCTUATION: Vec<&'static [u8]> = [
+         // Longer strings should go first
+         "==", "!=", "<=", ">=",
+diff --git a/src/parser.rs b/src/parser.rs
+index 1c7de29..370cffd 100644
+--- a/src/parser.rs
++++ b/src/parser.rs
+@@ -2,7 +2,7 @@ use std::cell::RefCell;
+ 
+ use std::rc::Rc;
+ 
+-use crate::{lexer::{Token, TokenKind, SourceLocation}, context::{AsciiStr, Context, ascii}, codegen::align_to};
++use crate::{lexer::{Token, TokenKind, SourceLocation, TY_KEYWORDS}, context::{AsciiStr, Context, ascii}, codegen::align_to};
+ 
+ pub type P<A> = Box<A>;
+ pub type SP<A> = Rc<RefCell<A>>;
+@@ -40,7 +40,7 @@ impl Ty {
+     fn short() -> Rc<Ty> { Rc::new(Ty { kind: TyKind::Short, size: 2, align: 2 }) }
+     fn int() -> Rc<Ty> { Rc::new(Ty { kind: TyKind::Int, size: 4, align: 4 }) }
+     fn long() -> Rc<Ty> { Rc::new(Ty { kind: TyKind::Long, size: 8, align: 8 }) }
+-    fn unit() -> Rc<Ty> { Rc::new(Ty { kind: TyKind::Unit, size: 0, align: 1 }) }
++    fn unit() -> Rc<Ty> { Rc::new(Ty { kind: TyKind::Unit, size: 1, align: 1 }) }
+     fn ptr(base: Rc<Ty>) -> Rc<Ty> { Rc::new(Ty { kind: TyKind::Ptr(base), size: 8, align: 8 }) }
+     fn func(ret: Rc<Ty>, params: Vec<Rc<Ty>>) -> Rc<Ty> { Rc::new(Ty { kind: TyKind::Fn(ret, params), size: 0, align: 1 }) }
+     fn array(base: Rc<Ty>, len: usize) -> Rc<Ty> {
+@@ -440,8 +440,7 @@ impl<'a> Parser<'a> {
+     }
+ 
+     fn peek_is_ty_name(&self) -> bool {
+-        self.peek_is("char") || self.peek_is("short") || self.peek_is("int") || self.peek_is("long") ||
+-        self.peek_is("struct") || self.peek_is("union")
++        TY_KEYWORDS.contains(self.ctx.tok_source(self.peek()))
+     }
+ 
+     // declaration = declspec (declarator ("=" expr)? ("," declarator ("=" expr)?)*)? ";"
+@@ -457,6 +456,9 @@ impl<'a> Parser<'a> {
+ 
+             let loc = self.peek().loc;
+             let (ty, name) = self.declarator(base_ty.clone());
++            if matches!(ty.kind, TyKind::Unit) {
++                self.ctx.error_at(&loc, "variable declared void");
++            }
+             let var_data = Rc::new(RefCell::new(Binding {
+                 kind: BindingKind::LocalVar { stack_offset: -1 },
+                 name,
+@@ -487,9 +489,14 @@ impl<'a> Parser<'a> {
+ 
+     // declspec = "int" | "char" | "struct" struct-decl
+     fn declspec(&mut self) -> Rc<Ty> {
++        if self.peek_is("void") {
++            self.advance();
++            return Ty::unit();
++        }
++
+         if self.peek_is("char") {
+             self.advance();
+-            return Ty::char()
++            return Ty::char();
+         }
+ 
+         if self.peek_is("short") {
+diff --git a/test/variable.c b/test/variable.c
+index 7c88442..ac4b251 100644
+--- a/test/variable.c
++++ b/test/variable.c
+@@ -62,6 +62,8 @@ int main() {
+   ASSERT(3, ({ char *x[3]; char y; x[0]=&y; y=3; x[0][0]; }));
+   ASSERT(4, ({ char x[3]; char (*y)[3]=x; y[0][0]=4; y[0][0]; }));
+ 
++  { void *x; }
++
+   printf("OK\n");
+   return 0;
+ }

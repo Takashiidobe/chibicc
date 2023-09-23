@@ -1,0 +1,76 @@
+diff --git a/src/codegen.rs b/src/codegen.rs
+index 088e426..de5baa2 100644
+--- a/src/codegen.rs
++++ b/src/codegen.rs
+@@ -331,8 +331,16 @@ impl<'a> Codegen<'a> {
+     }
+ 
+     fn load(&mut self, ty: &Ty) {
+-        if let TyKind::Array(_, _) = ty.kind {
+-            return;
++        match ty.kind {
++            TyKind::Array(_, _) | TyKind::Struct(_) | TyKind::Union(_) =>
++                // If it is an array/struct/union, do not attempt to load a value to the
++                // register because in general we can't load an entire array to a
++                // register. As a result, the result of an evaluation of an array
++                // becomes not the array itself but the address of the array.
++                // This is where "array is automatically converted to a pointer to
++                // the first element of the array in C" occurs.
++                return,
++            _ => {},
+         }
+ 
+         if ty.size == 1 {
+@@ -346,6 +354,17 @@ impl<'a> Codegen<'a> {
+     fn store(&mut self, ty: &Ty) {
+         self.pop("%rdi");
+ 
++        match &ty.kind {
++            TyKind::Struct(_) | TyKind::Union(_) => {
++                for i in 0..ty.size {
++                    wln!(self, "  mov {}(%rax), %r8b", i);
++                    wln!(self, "  mov %r8b, {}(%rdi)", i);
++                }
++                return;
++            },
++            _ => {}
++        }
++
+         if ty.size == 1 {
+             wln!(self, "  mov %al, (%rdi)");
+         }
+diff --git a/test/struct.c b/test/struct.c
+index 8d041b2..b02d87a 100644
+--- a/test/struct.c
++++ b/test/struct.c
+@@ -36,6 +36,16 @@ int main() {
+   ASSERT(3, ({ struct t {char a;} x; struct t *y = &x; x.a=3; y->a; }));
+   ASSERT(3, ({ struct t {char a;} x; struct t *y = &x; y->a=3; x.a; }));
+ 
++  ASSERT(3, ({ struct {int a,b;} x,y; x.a=3; y=x; y.a; }));
++  ASSERT(7, ({ struct t {int a,b;}; struct t x; x.a=7; struct t y; struct t *z=&y; *z=x; y.a; }));
++  ASSERT(7, ({ struct t {int a,b;}; struct t x; x.a=7; struct t y, *p=&x, *q=&y; *q=*p; y.a; }));
++  ASSERT(5, ({ struct t {char a, b;} x, y; x.a=5; y=x; y.a; }));
++
++  ASSERT(3, ({ struct {int a,b;} x,y; x.a=3; y=x; y.a; }));
++  ASSERT(7, ({ struct t {int a,b;}; struct t x; x.a=7; struct t y; struct t *z=&y; *z=x; y.a; }));
++  ASSERT(7, ({ struct t {int a,b;}; struct t x; x.a=7; struct t y, *p=&x, *q=&y; *q=*p; y.a; }));
++  ASSERT(5, ({ struct t {char a, b;} x, y; x.a=5; y=x; y.a; }));
++
+   printf("OK\n");
+   return 0;
+ }
+diff --git a/test/union.c b/test/union.c
+index f891e8c..c25a621 100644
+--- a/test/union.c
++++ b/test/union.c
+@@ -7,6 +7,9 @@ int main() {
+   ASSERT(0, ({ union { int a; char b[4]; } x; x.a = 515; x.b[2]; }));
+   ASSERT(0, ({ union { int a; char b[4]; } x; x.a = 515; x.b[3]; }));
+ 
++  ASSERT(3, ({ union {int a,b;} x,y; x.a=3; y.a=5; y=x; y.a; }));
++  ASSERT(3, ({ union {struct {int a,b;} c;} x,y; x.c.b=3; y.c.b=5; y=x; y.c.b; }));
++
+   printf("OK\n");
+   return 0;
+ }

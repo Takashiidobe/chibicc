@@ -1,0 +1,6 @@
+[book]
+authors = ["Takashi Idobe"]
+language = "en"
+multilingual = false
+src = "src"
+title = "Chibicc"

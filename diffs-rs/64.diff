@@ -1,0 +1,160 @@
+diff --git a/src/codegen.rs b/src/codegen.rs
+index 76f69d3..fc92cd5 100644
+--- a/src/codegen.rs
++++ b/src/codegen.rs
+@@ -5,6 +5,9 @@ use crate::{parser::{BindingKind, Function, StmtNode, StmtKind, ExprNode, ExprKi
+ const ARG_REGS8: [&str;6] = [
+     "%dil", "%sil", "%dl", "%cl", "%r8b", "%r9b"
+ ];
++const ARG_REGS16: [&str;6] = [
++    "%di", "%si", "%dx", "%cx", "%r8w", "%r9w"
++];
+ const ARG_REGS32: [&str;6] = [
+     "%edi", "%esi", "%edx", "%ecx", "%r8d", "%r9d"
+ ];
+@@ -163,6 +166,7 @@ impl<'a> Codegen<'a> {
+     fn store_gp(&mut self, reg_idx: usize, stack_offset: i64, size: usize) {
+         match size {
+             1 => wln!(self, " mov {}, {}(%rbp)", ARG_REGS8[reg_idx], stack_offset),
++            2 => wln!(self, " mov {}, {}(%rbp)", ARG_REGS16[reg_idx], stack_offset),
+             4 => wln!(self, " mov {}, {}(%rbp)", ARG_REGS32[reg_idx], stack_offset),
+             8 => wln!(self, " mov {}, {}(%rbp)", ARG_REGS64[reg_idx], stack_offset),
+             _ => panic!("invalid size")
+@@ -353,6 +357,9 @@ impl<'a> Codegen<'a> {
+         if ty.size == 1 {
+             wln!(self, "  movsbq (%rax), %rax");
+         }
++        else if ty.size == 2 {
++            wln!(self, "  movswq (%rax), %rax");
++        }
+         else if ty.size == 4 {
+             wln!(self, "  movsxd (%rax), %rax");
+         }
+@@ -378,6 +385,9 @@ impl<'a> Codegen<'a> {
+         if ty.size == 1 {
+             wln!(self, "  mov %al, (%rdi)");
+         }
++        else if ty.size == 2 {
++            wln!(self, "  mov %ax, (%rdi)");
++        }
+         else if ty.size == 4 {
+             wln!(self, "  mov %eax, (%rdi)");
+         }
+diff --git a/src/lexer.rs b/src/lexer.rs
+index 2f16462..dc39e4e 100644
+--- a/src/lexer.rs
++++ b/src/lexer.rs
+@@ -32,7 +32,7 @@ lazy_static! {
+         "if", "else",
+         "for", "while",
+         "sizeof",
+-        "long", "int", "char",
++        "long", "int", "short", "char",
+         "struct", "union"
+     ].map(|k| k.as_bytes()).into();
+ 
+diff --git a/src/parser.rs b/src/parser.rs
+index 865a2d1..7447138 100644
+--- a/src/parser.rs
++++ b/src/parser.rs
+@@ -9,9 +9,10 @@ pub type SP<A> = Rc<RefCell<A>>;
+ 
+ #[derive(Debug)]
+ pub enum TyKind {
++    Char,
++    Short,
+     Int,
+     Long,
+-    Char,
+     Ptr(Rc<Ty>),
+     Fn(Rc<Ty>, Vec<Rc<Ty>>),
+     Array(Rc<Ty>, usize),
+@@ -35,9 +36,10 @@ pub struct Ty {
+ }
+ 
+ impl Ty {
++    fn char() -> Rc<Ty> { Rc::new(Ty { kind: TyKind::Char, size: 1, align: 1 }) }
++    fn short() -> Rc<Ty> { Rc::new(Ty { kind: TyKind::Short, size: 2, align: 2 }) }
+     fn int() -> Rc<Ty> { Rc::new(Ty { kind: TyKind::Int, size: 4, align: 4 }) }
+     fn long() -> Rc<Ty> { Rc::new(Ty { kind: TyKind::Long, size: 8, align: 8 }) }
+-    fn char() -> Rc<Ty> { Rc::new(Ty { kind: TyKind::Char, size: 1, align: 1 }) }
+     fn unit() -> Rc<Ty> { Rc::new(Ty { kind: TyKind::Unit, size: 0, align: 1 }) }
+     fn ptr(base: Rc<Ty>) -> Rc<Ty> { Rc::new(Ty { kind: TyKind::Ptr(base), size: 8, align: 8 }) }
+     fn func(ret: Rc<Ty>, params: Vec<Rc<Ty>>) -> Rc<Ty> { Rc::new(Ty { kind: TyKind::Fn(ret, params), size: 0, align: 1 }) }
+@@ -71,7 +73,7 @@ impl Ty {
+ 
+     fn is_integer_like(&self) -> bool {
+         match &self.kind {
+-            TyKind::Int | TyKind::Long | TyKind::Char => true,
++            TyKind::Char | TyKind::Short | TyKind::Int | TyKind::Long => true,
+             _ => false,
+         }
+     }
+@@ -394,7 +396,7 @@ impl<'a> Parser<'a> {
+     }
+ 
+     fn peek_is_ty_name(&self) -> bool {
+-        self.peek_is("char") || self.peek_is("int") || self.peek_is("long") ||
++        self.peek_is("char") || self.peek_is("short") || self.peek_is("int") || self.peek_is("long") ||
+         self.peek_is("struct") || self.peek_is("union")
+     }
+ 
+@@ -446,6 +448,11 @@ impl<'a> Parser<'a> {
+             return Ty::char()
+         }
+ 
++        if self.peek_is("short") {
++            self.advance();
++            return Ty::short();
++        }
++
+         if self.peek_is("int") {
+             self.advance();
+             return Ty::int();
+diff --git a/test/function.c b/test/function.c
+index 951a281..ece913a 100644
+--- a/test/function.c
++++ b/test/function.c
+@@ -35,6 +35,10 @@ int sub_long(long a, long b, long c) {
+   return a - b - c;
+ }
+ 
++int sub_short(short a, short b, short c) {
++  return a - b - c;
++}
++
+ int main() {
+   ASSERT(3, ret3());
+   ASSERT(8, add2(3, 5));
+@@ -50,6 +54,7 @@ int main() {
+   ASSERT(1, ({ sub_char(7, 3, 3); }));
+ 
+   ASSERT(1, sub_long(7, 3, 3));
++  ASSERT(1, sub_short(7, 3, 3));
+ 
+   printf("OK\n");
+   return 0;
+diff --git a/test/struct.c b/test/struct.c
+index 7ca0374..cbd4343 100644
+--- a/test/struct.c
++++ b/test/struct.c
+@@ -50,6 +50,7 @@ int main() {
+   ASSERT(8, ({ struct t {int a; int b;}; struct t y; sizeof(y); }));
+ 
+   ASSERT(16, ({ struct {char a; long b;} x; sizeof(x); }));
++  ASSERT(4, ({ struct {char a; short b;} x; sizeof(x); }));
+ 
+   printf("OK\n");
+   return 0;
+diff --git a/test/variable.c b/test/variable.c
+index a329a9a..98ef696 100644
+--- a/test/variable.c
++++ b/test/variable.c
+@@ -51,6 +51,7 @@ int main() {
+   ASSERT(1, ({ int x; char y; int z; char *a=&y; char *b=&z; b-a; }));
+ 
+   ASSERT(8, ({ long x; sizeof(x); }));
++  ASSERT(2, ({ short x; sizeof(x); }));
+ 
+   printf("OK\n");
+   return 0;

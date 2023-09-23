@@ -1,0 +1,169 @@
+diff --git a/src/codegen.rs b/src/codegen.rs
+index 08b47b5..0cbb5ca 100644
+--- a/src/codegen.rs
++++ b/src/codegen.rs
+@@ -130,13 +130,17 @@ impl<'a> Codegen<'a> {
+                 self.addr(node);
+                 println!("  mov (%rax), %rax");
+             }
++            ExprKind::Funcall(ref name) => {
++                println!("  mov $0, %rax");
++                println!("  call {}", String::from_utf8_lossy(name));
++            }
+             ExprKind::Addr(ref expr) => {
+                 self.addr(expr);
+-            },
++            }
+             ExprKind::Deref(ref expr) => {
+                 self.expr(expr);
+                 println!("  mov (%rax), %rax");
+-            },
++            }
+             ExprKind::Assign(ref lhs, ref rhs) => {
+                 self.addr(lhs);
+                 self.push();
+@@ -150,21 +154,21 @@ impl<'a> Codegen<'a> {
+                 self.expr(lhs.as_ref());
+                 self.pop("%rdi");
+                 println!("  add %rdi, %rax");
+-            },
++            }
+             ExprKind::Sub(ref lhs, ref rhs) => {
+                 self.expr(rhs.as_ref());
+                 self.push();
+                 self.expr(lhs.as_ref());
+                 self.pop("%rdi");
+                 println!("  sub %rdi, %rax");
+-            },
++            }
+             ExprKind::Mul(ref lhs, ref rhs) => {
+                 self.expr(rhs.as_ref());
+                 self.push();
+                 self.expr(lhs.as_ref());
+                 self.pop("%rdi");
+                 println!("  imul %rdi, %rax");
+-            },
++            }
+             ExprKind::Div(ref lhs, ref rhs) => {
+                 self.expr(rhs.as_ref());
+                 self.push();
+@@ -172,7 +176,7 @@ impl<'a> Codegen<'a> {
+                 self.pop("%rdi");
+                 println!("  cqo");
+                 println!("  idiv %rdi, %rax");
+-            },
++            }
+             ExprKind::Eq(ref lhs, ref rhs) => {
+                 self.expr(rhs.as_ref());
+                 self.push();
+@@ -181,7 +185,7 @@ impl<'a> Codegen<'a> {
+                 println!("  cmp %rdi, %rax");
+                 println!("  sete %al");
+                 println!("  movzb %al, %rax");
+-            },
++            }
+             ExprKind::Ne(ref lhs, ref rhs) => {
+                 self.expr(rhs.as_ref());
+                 self.push();
+@@ -190,7 +194,7 @@ impl<'a> Codegen<'a> {
+                 println!("  cmp %rdi, %rax");
+                 println!("  setne %al");
+                 println!("  movzb %al, %rax");
+-            },
++            }
+             ExprKind::Le(ref lhs, ref rhs) => {
+                 self.expr(rhs.as_ref());
+                 self.push();
+@@ -199,7 +203,7 @@ impl<'a> Codegen<'a> {
+                 println!("  cmp %rdi, %rax");
+                 println!("  setle %al");
+                 println!("  movzb %al, %rax");
+-            },
++            }
+             ExprKind::Lt(ref lhs, ref rhs) => {
+                 self.expr(rhs.as_ref());
+                 self.push();
+@@ -208,7 +212,7 @@ impl<'a> Codegen<'a> {
+                 println!("  cmp %rdi, %rax");
+                 println!("  setl %al");
+                 println!("  movzb %al, %rax");
+-            },
++            }
+         };
+     }
+ 
+diff --git a/src/parser.rs b/src/parser.rs
+index 0ff47dc..bed83c5 100644
+--- a/src/parser.rs
++++ b/src/parser.rs
+@@ -37,6 +37,8 @@ pub enum ExprKind {
+     Addr(P<ExprNode>),
+     Deref(P<ExprNode>),
+ 
++    Funcall(AsciiStr),
++
+     Add(P<ExprNode>, P<ExprNode>),
+     Sub(P<ExprNode>, P<ExprNode>),
+     Mul(P<ExprNode>, P<ExprNode>),
+@@ -501,7 +503,8 @@ impl<'a> Parser<'a> {
+         self.primary()
+     }
+ 
+-    // primary = "(" expr ")" | ident | num
++    // primary = "(" expr ")" | ident args? | num
++    // args = "(" ")"
+     fn primary(&mut self) -> ExprNode {
+         match self.peek().kind {
+             TokenKind::Num(val) => {
+@@ -512,10 +515,18 @@ impl<'a> Parser<'a> {
+                 let tok = self.peek();
+                 let offset = tok.offset;
+                 let name = self.tok_source(tok).to_owned();
++                self.advance();
++
++                if self.tok_is("(") {
++                    self.advance();
++                    let node = ExprNode { kind: ExprKind::Funcall(name), offset, ty: Ty::Int };
++                    self.skip(")");
++                    return node;
++                }
++
+                 let var_data = self.vars.iter().find(|v| v.borrow().name == name);
+                 if let Some(var_data) = var_data {
+                     let expr = ExprNode { kind: ExprKind::Var(var_data.clone()), offset, ty: Ty::Int };
+-                    self.advance();
+                     return expr;
+                 }
+                 else {
+diff --git a/test.sh b/test.sh
+index e40ddae..327e106 100755
+--- a/test.sh
++++ b/test.sh
+@@ -1,10 +1,15 @@
+ #!/bin/bash
++cat <<EOF | gcc -xc -c -o tmp2.o -
++int ret3() { return 3; }
++int ret5() { return 5; }
++EOF
++
+ assert() {
+   expected="$1"
+   input="$2"
+ 
+   ./target/debug/chibicc "$input" > tmp.s || exit
+-  gcc -static -o tmp tmp.s -z execstack
++  gcc -static -o tmp tmp.s -z execstack tmp2.o
+   ./tmp
+   actual="$?"
+ 
+@@ -96,6 +101,9 @@ assert 5 '{ int x=3; return (&x+2)-&x+3; }'
+ assert 8 '{ int x, y; x=3; y=5; return x+y; }'
+ assert 8 '{ int x=3, y=5; return x+y; }'
+ 
+-rm -f tmp tmp.s
++assert 3 '{ return ret3(); }'
++assert 5 '{ return ret5(); }'
++
++rm -f tmp tmp2.o tmp.s
+ 
+ echo OK

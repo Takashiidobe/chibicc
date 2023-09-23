@@ -1,0 +1,263 @@
+diff --git a/src/codegen.rs b/src/codegen.rs
+index 91cfa4e..1bac773 100644
+--- a/src/codegen.rs
++++ b/src/codegen.rs
+@@ -1,9 +1,38 @@
++use std::collections::HashMap;
++
+ use crate::errors::ErrorReporting;
+-use crate::parser::{TopLevelNode, TopLevelKind, StmtNode, StmtKind, ExprNode, ExprKind};
++use crate::parser::{TopLevelNode, TopLevelKind, StmtNode, StmtKind, ExprNode, ExprKind, AsciiStr};
++
++
++struct GenFunction {
++    offsets: HashMap<AsciiStr, i64>,
++    stack_size: usize
++}
++
++impl GenFunction {
++    fn new(node: &TopLevelNode) -> Self {
++        match node.kind {
++            TopLevelKind::Function(ref locals, _) => {
++                let mut offset = 0;
++                let mut offsets = HashMap::new();
++                for local in locals {
++                    offset -= 8;
++                    offsets.insert(local.to_owned(), offset);
++                }
++                Self {
++                    offsets,
++                    stack_size: align_to(-offset, 16),
++                }
++            }
++        }
++    }
++}
+ 
+ pub struct Codegen<'a> {
+     src: &'a [u8],
+     depth: i64,
++    top_node: &'a TopLevelNode,
++    curr_gen_fn: GenFunction
+ }
+ 
+ impl<'a> ErrorReporting for Codegen<'a> {
+@@ -11,26 +40,28 @@ impl<'a> ErrorReporting for Codegen<'a> {
+ }
+ 
+ impl<'a> Codegen<'a> {
+-    pub fn new(src: &'a [u8]) -> Self {
++    pub fn new(src: &'a [u8], node: &'a TopLevelNode) -> Self {
+         Self {
+             src,
+-            depth: 0
++            depth: 0,
++            top_node: node,
++            curr_gen_fn: GenFunction::new(node)
+         }
+     }
+ 
+-    pub fn program(&mut self, node: &TopLevelNode) {
++    pub fn program(&mut self) {
+         println!("  .globl main");
+         println!("main:");
+ 
+         // Prologue
+         println!("  push %rbp");
+         println!("  mov %rsp, %rbp");
+-        println!("  sub $208, %rsp");
++        println!("  sub ${}, %rsp", self.curr_gen_fn.stack_size);
+         println!();
+ 
+-        match node.kind {
+-            TopLevelKind::Stmts(ref stmts) => {
+-                for stmt in stmts {
++        match self.top_node.kind {
++            TopLevelKind::Function(_, ref body) => {
++                for stmt in body {
+                     self.stmt(stmt)
+                 }
+             }
+@@ -145,9 +176,9 @@ impl<'a> Codegen<'a> {
+     }
+ 
+     fn addr(&self, expr: &ExprNode) {
+-        if let ExprKind::Var(name) = expr.kind {
+-            let index: i64 = (name - b'a' + 1).into();
+-            println!("  lea {}(%rbp), %rax", -index * 8);
++        if let ExprKind::Var(ref name) = expr.kind {
++            let offset = self.curr_gen_fn.offsets.get(name).unwrap();
++            println!("  lea {}(%rbp), %rax", offset);
+             return;
+         }
+         
+@@ -160,3 +191,7 @@ impl<'a> Codegen<'a> {
+         }
+     }
+ }
++
++fn align_to(n: i64, align: i64) -> usize {
++    (((n + align - 1) / align) * align).try_into().unwrap()
++}
+diff --git a/src/lexer.rs b/src/lexer.rs
+index 4a7cf8e..2176263 100644
+--- a/src/lexer.rs
++++ b/src/lexer.rs
+@@ -51,13 +51,17 @@ impl<'a> Lexer<'a> {
+               });
+               offset += count;
+           }
+-          else if c.is_ascii_alphabetic() {
++          else if is_ident_start(c) {
++            let start_offset = offset;
++            loop {
++                offset += 1;
++                if !is_ident_cont(src[offset]) { break; }
++            }
+             toks.push(Token {
+-                offset,
+-                length: 1,
++                offset: start_offset,
++                length: offset - start_offset,
+                 kind: TokenKind::Ident,
+             });
+-            offset += 1;
+           }
+           else {
+               let punct_len = read_punct(&src[offset..]);
+@@ -101,6 +105,13 @@ fn ispunct(c: u8) -> bool {
+       c == b'(' || c == b')' || c == b'<' || c == b'>';
+ }
+ 
++fn is_ident_start(c: u8) -> bool {
++    c.is_ascii_alphabetic() || c == b'_'
++}
++fn is_ident_cont(c: u8) -> bool {
++    is_ident_start(c) || c.is_ascii_digit()
++}
++
+ fn starts_with(src: &[u8], s: &str) -> bool {
+   return src.starts_with(s.as_bytes());
+ }
+diff --git a/src/main.rs b/src/main.rs
+index 35b9091..f29a758 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -21,10 +21,10 @@ fn main() {
+ 
+     let mut parser = Parser::new(src, &toks);
+ 
+-    let node = parser.stmts();
++    let node = parser.function();
+     parser.ensure_done();
+ 
+-    let mut codegen = Codegen::new(src);
+-    codegen.program(&node);
++    let mut codegen = Codegen::new(src, &node);
++    codegen.program();
+     codegen.sanity_checks();
+ }
+\ No newline at end of file
+diff --git a/src/parser.rs b/src/parser.rs
+index 43ea629..4da753f 100644
+--- a/src/parser.rs
++++ b/src/parser.rs
+@@ -1,7 +1,10 @@
++use std::collections::HashSet;
++
+ use crate::lexer::{Token, TokenKind};
+ use crate::errors::ErrorReporting;
+ 
+ pub type P<A> = Box<A>;
++pub type AsciiStr = Vec<u8>;
+ 
+ #[derive(Debug)]
+ pub struct Node<Kind> {
+@@ -11,7 +14,7 @@ pub struct Node<Kind> {
+ #[derive(Debug)]
+ pub enum ExprKind {
+     Num(i32),
+-    Var(u8),
++    Var(AsciiStr),
+ 
+     Add(P<ExprNode>, P<ExprNode>),
+     Sub(P<ExprNode>, P<ExprNode>),
+@@ -34,7 +37,7 @@ pub enum StmtKind {
+ 
+ #[derive(Debug)]
+ pub enum TopLevelKind {
+-    Stmts(Vec<StmtNode>)
++    Function(Vec<AsciiStr>, Vec<StmtNode>)
+ }
+ 
+ pub type ExprNode = Node<ExprKind>;
+@@ -44,7 +47,8 @@ pub type TopLevelNode = Node<TopLevelKind>;
+ pub struct Parser<'a> {
+     src: &'a [u8],
+     toks: &'a [Token],
+-    tok_index: usize
++    tok_index: usize,
++    vars: HashSet<AsciiStr>,
+ }
+ 
+ impl<'a> ErrorReporting for Parser<'a> {
+@@ -60,16 +64,17 @@ impl<'a> Parser<'a> {
+             src,
+             toks,
+             tok_index: 0,
++            vars: HashSet::new()
+         }
+     }
+-    
++
+     // stmts = stmt+
+-    pub fn stmts(&mut self) -> TopLevelNode {
++    pub fn function(&mut self) -> TopLevelNode {
+         let mut stmts = Vec::new();
+         while !self.is_done() {
+             stmts.push(self.stmt())
+         }
+-        TopLevelNode { kind: TopLevelKind::Stmts(stmts) }
++        TopLevelNode { kind: TopLevelKind::Function(self.vars.clone().into_iter().collect(), stmts) }
+     }
+ 
+     // stmt = expr-stmt
+@@ -237,7 +242,9 @@ impl<'a> Parser<'a> {
+                 return ExprNode { kind: ExprKind::Num(val) }
+             }
+             TokenKind::Ident => {
+-                let node = ExprNode { kind: ExprKind::Var(self.src[self.peek().offset]) };
++                let name = self.tok_source(self.peek()).to_owned();
++                let node = ExprNode { kind: ExprKind::Var(name.clone()) };
++                self.vars.insert(name);
+                 self.advance();
+                 return node;
+             }
+@@ -261,9 +268,12 @@ impl<'a> Parser<'a> {
+         self.tok_index += 1;
+     }
+ 
++    fn tok_source(&self, tok: &Token) -> &[u8] {
++        &self.src[tok.offset..(tok.offset + tok.length)]
++    }
++
+     fn tok_is(&self, s: &str) -> bool {
+-        let tok = self.peek();
+-        self.src[tok.offset..(tok.offset + tok.length)].eq(s.as_bytes())
++        self.tok_source(self.peek()).eq(s.as_bytes())
+     }
+ 
+     fn skip(&mut self, s: &str) {
+diff --git a/test.sh b/test.sh
+index cbbdca8..cfe9679 100755
+--- a/test.sh
++++ b/test.sh
+@@ -55,6 +55,8 @@ assert 3 '1; 2; 3;'
+ assert 3 'a=3; a;'
+ assert 8 'a=3; z=5; a+z;'
+ assert 6 'a=b=3; a+b;'
++assert 3 'foo=3; foo;'
++assert 8 'foo123=3; bar=5; foo123+bar;'
+ 
+ rm -f tmp tmp.s
+ 

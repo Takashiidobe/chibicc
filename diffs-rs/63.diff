@@ -1,0 +1,136 @@
+diff --git a/Makefile b/Makefile
+index e2b2d94..33aa3a4 100644
+--- a/Makefile
++++ b/Makefile
+@@ -18,7 +18,7 @@ $(TESTS_BUILD_DIR)/%: $(BIN) test/%.c
+ 	$(CC) -o $@ $(TESTS_BUILD_DIR)/$*.s -xc test/common
+ 
+ test: $(TESTS)
+-	for i in $^; do echo $$i; ./$$i || exit 1; echo; done
++	@for i in $^; do echo $$i; ./$$i || exit 1; echo; done
+ 	test/driver.sh
+ 
+ clean:
+diff --git a/src/lexer.rs b/src/lexer.rs
+index d5589af..2f16462 100644
+--- a/src/lexer.rs
++++ b/src/lexer.rs
+@@ -32,7 +32,7 @@ lazy_static! {
+         "if", "else",
+         "for", "while",
+         "sizeof",
+-        "int", "char",
++        "long", "int", "char",
+         "struct", "union"
+     ].map(|k| k.as_bytes()).into();
+ 
+diff --git a/src/parser.rs b/src/parser.rs
+index f50cba7..865a2d1 100644
+--- a/src/parser.rs
++++ b/src/parser.rs
+@@ -10,6 +10,7 @@ pub type SP<A> = Rc<RefCell<A>>;
+ #[derive(Debug)]
+ pub enum TyKind {
+     Int,
++    Long,
+     Char,
+     Ptr(Rc<Ty>),
+     Fn(Rc<Ty>, Vec<Rc<Ty>>),
+@@ -35,6 +36,7 @@ pub struct Ty {
+ 
+ impl Ty {
+     fn int() -> Rc<Ty> { Rc::new(Ty { kind: TyKind::Int, size: 4, align: 4 }) }
++    fn long() -> Rc<Ty> { Rc::new(Ty { kind: TyKind::Long, size: 8, align: 8 }) }
+     fn char() -> Rc<Ty> { Rc::new(Ty { kind: TyKind::Char, size: 1, align: 1 }) }
+     fn unit() -> Rc<Ty> { Rc::new(Ty { kind: TyKind::Unit, size: 0, align: 1 }) }
+     fn ptr(base: Rc<Ty>) -> Rc<Ty> { Rc::new(Ty { kind: TyKind::Ptr(base), size: 8, align: 8 }) }
+@@ -69,7 +71,7 @@ impl Ty {
+ 
+     fn is_integer_like(&self) -> bool {
+         match &self.kind {
+-            TyKind::Int | TyKind::Char => true,
++            TyKind::Int | TyKind::Long | TyKind::Char => true,
+             _ => false,
+         }
+     }
+@@ -392,7 +394,8 @@ impl<'a> Parser<'a> {
+     }
+ 
+     fn peek_is_ty_name(&self) -> bool {
+-        self.peek_is("char") || self.peek_is("int") || self.peek_is("struct") || self.peek_is("union")
++        self.peek_is("char") || self.peek_is("int") || self.peek_is("long") ||
++        self.peek_is("struct") || self.peek_is("union")
+     }
+ 
+     // declaration = declspec (declarator ("=" expr)? ("," declarator ("=" expr)?)*)? ";"
+@@ -448,6 +451,11 @@ impl<'a> Parser<'a> {
+             return Ty::int();
+         }
+ 
++        if self.peek_is("long") {
++            self.advance();
++            return Ty::long();
++        }
++
+         if self.peek_is("struct") || self.peek_is("union") {
+             return self.struct_union_decl();
+         }
+@@ -1029,7 +1037,7 @@ impl<'a> Parser<'a> {
+         ExprNode {
+             kind: ExprKind::Funcall(fn_name, args),
+             loc,
+-            ty: Ty::int(),
++            ty: Ty::long(),
+         }
+     }
+ 
+diff --git a/test/function.c b/test/function.c
+index 39fff11..951a281 100644
+--- a/test/function.c
++++ b/test/function.c
+@@ -31,6 +31,10 @@ int fib(int x) {
+   return fib(x-1) + fib(x-2);
+ }
+ 
++int sub_long(long a, long b, long c) {
++  return a - b - c;
++}
++
+ int main() {
+   ASSERT(3, ret3());
+   ASSERT(8, add2(3, 5));
+@@ -45,6 +49,8 @@ int main() {
+ 
+   ASSERT(1, ({ sub_char(7, 3, 3); }));
+ 
++  ASSERT(1, sub_long(7, 3, 3));
++
+   printf("OK\n");
+   return 0;
+ }
+diff --git a/test/struct.c b/test/struct.c
+index 8975f43..7ca0374 100644
+--- a/test/struct.c
++++ b/test/struct.c
+@@ -49,6 +49,8 @@ int main() {
+   ASSERT(8, ({ struct t {int a; int b;} x; struct t y; sizeof(y); }));
+   ASSERT(8, ({ struct t {int a; int b;}; struct t y; sizeof(y); }));
+ 
++  ASSERT(16, ({ struct {char a; long b;} x; sizeof(x); }));
++
+   printf("OK\n");
+   return 0;
+ }
+diff --git a/test/variable.c b/test/variable.c
+index ee8e4ee..a329a9a 100644
+--- a/test/variable.c
++++ b/test/variable.c
+@@ -50,6 +50,8 @@ int main() {
+   ASSERT(7, ({ int x; int y; char z; char *a=&y; char *b=&z; b-a; }));
+   ASSERT(1, ({ int x; char y; int z; char *a=&y; char *b=&z; b-a; }));
+ 
++  ASSERT(8, ({ long x; sizeof(x); }));
++
+   printf("OK\n");
+   return 0;
+ }

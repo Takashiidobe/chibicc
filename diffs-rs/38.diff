@@ -1,0 +1,84 @@
+diff --git a/src/lexer.rs b/src/lexer.rs
+index a9b8529..0489f77 100644
+--- a/src/lexer.rs
++++ b/src/lexer.rs
+@@ -95,14 +95,26 @@ impl<'a> Lexer<'a> {
+                     if src[offset] == b'\n' || src[offset] == 0 {
+                         self.error_at(start_offset, "unclosed literal string");
+                     }
+-                    str.push(src[offset]);
+-                    offset += 1;
++
++                    if src[offset] == b'\\' {
++                        let e = src[offset + 1];
++                        let c = unescape(src[offset + 1])
++                            // Keep behaviour the same as chibicc
++                            // is this standard?
++                            .unwrap_or(e);
++                        str.push(c);
++                        offset += 2;
++                    }
++                    else {
++                        str.push(src[offset]);
++                        offset += 1;
++                    }
+                 }
+                 offset += 1;
+                 str.push(0);
+ 
+                 toks.push(Token {
+-                    offset,
++                    offset: start_offset,
+                     length: offset - start_offset,
+                     kind: TokenKind::Str(str),
+                 });
+@@ -173,4 +185,19 @@ fn read_punct(src: &[u8]) -> usize {
+     else {
+         0
+     }
++}
++
++fn unescape(b: u8) -> Option<u8> {
++    match b {
++        b'a' => Some(0x07),
++        b'b' => Some(0x08),
++        b't' => Some(0x09),
++        b'n' => Some(0x0A),
++        b'v' => Some(0x0B),
++        b'f' => Some(0x0C),
++        b'r' => Some(0x0D),
++        // [GNU] \e for the ASCII escape character is a GNU C extension.
++        b'e' => Some(0x1B),
++        _ => None
++    }
+ }
+\ No newline at end of file
+diff --git a/test.sh b/test.sh
+index 6a4d707..a8fc8e2 100755
+--- a/test.sh
++++ b/test.sh
+@@ -184,6 +184,24 @@ assert 99 'int main() { return "abc"[2]; }'
+ assert 0 'int main() { return "abc"[3]; }'
+ assert 4 'int main() { return sizeof("abc"); }'
+ 
++assert 7 'int main() { return "\a"[0]; }'
++assert 8 'int main() { return "\b"[0]; }'
++assert 9 'int main() { return "\t"[0]; }'
++assert 10 'int main() { return "\n"[0]; }'
++assert 11 'int main() { return "\v"[0]; }'
++assert 12 'int main() { return "\f"[0]; }'
++assert 13 'int main() { return "\r"[0]; }'
++assert 27 'int main() { return "\e"[0]; }'
++
++assert 106 'int main() { return "\j"[0]; }'
++assert 107 'int main() { return "\k"[0]; }'
++assert 108 'int main() { return "\l"[0]; }'
++
++assert 7 'int main() { return "\ax\ny"[0]; }'
++assert 120 'int main() { return "\ax\ny"[1]; }'
++assert 10 'int main() { return "\ax\ny"[2]; }'
++assert 121 'int main() { return "\ax\ny"[3]; }'
++
+ rm -f tmp tmp2.o tmp.s
+ 
+ echo OK

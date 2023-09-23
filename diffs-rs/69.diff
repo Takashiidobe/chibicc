@@ -1,0 +1,26 @@
+diff --git a/src/parser.rs b/src/parser.rs
+index 4195023..9492e54 100644
+--- a/src/parser.rs
++++ b/src/parser.rs
+@@ -545,7 +545,7 @@ impl<'a> Parser<'a> {
+         else if decl_tys == [Int] {
+             return Ty::int();
+         }
+-        else if decl_tys == [Long] || decl_tys == [Int, Long] {
++        else if decl_tys == [Long] || decl_tys == [Int, Long] || decl_tys == [Long, Long] {
+             return Ty::long();
+         }
+ 
+diff --git a/test/decl.c b/test/decl.c
+index 14dc267..8536ca9 100644
+--- a/test/decl.c
++++ b/test/decl.c
+@@ -8,6 +8,8 @@ int main() {
+   ASSERT(8, ({ long int x; sizeof(x); }));
+   ASSERT(8, ({ int long x; sizeof(x); }));
+ 
++  ASSERT(8, ({ long long x; sizeof(x); }));
++
+   printf("OK\n");
+   return 0;
+ }

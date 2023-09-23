@@ -1,0 +1,241 @@
+diff --git a/src/codegen.rs b/src/codegen.rs
+index c752472..b9a8065 100644
+--- a/src/codegen.rs
++++ b/src/codegen.rs
+@@ -1,4 +1,4 @@
+-use std::{io::Write, ops::{Add, Sub, Div, Mul}, fmt::Display};
++use std::{io::Write, ops::{Add, Sub, Div, Mul}, fmt::Display, rc::Rc};
+ 
+ use crate::{parser::{BindingKind, Function, StmtNode, StmtKind, ExprNode, ExprKind, SourceUnit, TyKind, Ty}, context::{Context, ascii}};
+ 
+@@ -262,67 +262,72 @@ impl<'a> Codegen<'a> {
+                 self.store(&node.ty);
+             }
+             ExprKind::Add(lhs, rhs) => {
+-                self.expr(rhs.as_ref());
++                self.expr(rhs);
+                 self.push();
+-                self.expr(lhs.as_ref());
++                self.expr(lhs);
+                 self.pop("%rdi");
+-                wln!(self, "  add %rdi, %rax");
++                wln!(self, "  add {}, {}", data_reg(&lhs.ty), acc_reg(&lhs.ty));
+             }
+             ExprKind::Sub(lhs, rhs) => {
+-                self.expr(rhs.as_ref());
++                self.expr(rhs);
+                 self.push();
+-                self.expr(lhs.as_ref());
++                self.expr(lhs);
+                 self.pop("%rdi");
+-                wln!(self, "  sub %rdi, %rax");
++                wln!(self, "  sub {}, {}", data_reg(&lhs.ty), acc_reg(&lhs.ty));
+             }
+             ExprKind::Mul(lhs, rhs) => {
+-                self.expr(rhs.as_ref());
++                self.expr(rhs);
+                 self.push();
+-                self.expr(lhs.as_ref());
++                self.expr(lhs);
+                 self.pop("%rdi");
+-                wln!(self, "  imul %rdi, %rax");
++                wln!(self, "  imul {}, {}", data_reg(&lhs.ty), acc_reg(&lhs.ty));
+             }
+             ExprKind::Div(lhs, rhs) => {
+-                self.expr(rhs.as_ref());
++                self.expr(rhs);
+                 self.push();
+-                self.expr(lhs.as_ref());
++                self.expr(lhs);
+                 self.pop("%rdi");
+-                wln!(self, "  cqo");
+-                wln!(self, "  idiv %rdi, %rax");
++                if lhs.ty.size == 8 {
++                    wln!(self, "  cqo");
++                }
++                else {
++                    wln!(self, "  cdq");
++                }
++                wln!(self, "  idiv {}", data_reg(&lhs.ty));
+             }
+             ExprKind::Eq(lhs, rhs) => {
+-                self.expr(rhs.as_ref());
++                self.expr(rhs);
+                 self.push();
+-                self.expr(lhs.as_ref());
++                self.expr(lhs);
+                 self.pop("%rdi");
+-                wln!(self, "  cmp %rdi, %rax");
++                wln!(self, "  cmp {}, {}", data_reg(&lhs.ty), acc_reg(&lhs.ty));
+                 wln!(self, "  sete %al");
+                 wln!(self, "  movzb %al, %rax");
+             }
+             ExprKind::Ne(lhs, rhs) => {
+-                self.expr(rhs.as_ref());
++                self.expr(rhs);
+                 self.push();
+-                self.expr(lhs.as_ref());
++                self.expr(lhs);
+                 self.pop("%rdi");
+-                wln!(self, "  cmp %rdi, %rax");
++                wln!(self, "  cmp {}, {}", data_reg(&lhs.ty), acc_reg(&lhs.ty));
+                 wln!(self, "  setne %al");
+                 wln!(self, "  movzb %al, %rax");
+             }
+             ExprKind::Le(lhs, rhs) => {
+-                self.expr(rhs.as_ref());
++                self.expr(rhs);
+                 self.push();
+-                self.expr(lhs.as_ref());
++                self.expr(lhs);
+                 self.pop("%rdi");
+-                wln!(self, "  cmp %rdi, %rax");
++                wln!(self, "  cmp {}, {}", data_reg(&lhs.ty), acc_reg(&lhs.ty));
+                 wln!(self, "  setle %al");
+                 wln!(self, "  movzb %al, %rax");
+             }
+             ExprKind::Lt(lhs, rhs) => {
+-                self.expr(rhs.as_ref());
++                self.expr(rhs);
+                 self.push();
+-                self.expr(lhs.as_ref());
++                self.expr(lhs);
+                 self.pop("%rdi");
+-                wln!(self, "  cmp %rdi, %rax");
++                wln!(self, "  cmp {}, {}", data_reg(&lhs.ty), acc_reg(&lhs.ty));
+                 wln!(self, "  setl %al");
+                 wln!(self, "  movzb %al, %rax");
+             }
+@@ -455,6 +460,20 @@ impl<'a> Codegen<'a> {
+     }
+ }
+ 
++fn data_reg(ty: &Rc<Ty>) -> &str {
++    match ty.kind {
++        TyKind::Long | TyKind::Ptr(_) | TyKind::Array(_, _) => "%rdi",
++        _ => "%edi",
++    }
++}
++
++fn acc_reg(ty: &Rc<Ty>) -> &str {
++    match ty.kind {
++        TyKind::Long | TyKind::Ptr(_) | TyKind::Array(_, _) => "%rax",
++        _ => "%eax",
++    }
++}
++
+ pub trait Alignable : Display + Copy + Add<Output=Self> + Sub<Output=Self> + Div<Output=Self> + Mul<Output=Self> {
+     fn one() -> Self;
+     fn is_zero(self) -> bool;
+diff --git a/src/parser.rs b/src/parser.rs
+index c5b67d8..99970e5 100644
+--- a/src/parser.rs
++++ b/src/parser.rs
+@@ -78,7 +78,7 @@ impl Ty {
+         }
+     }
+ 
+-    fn is_pointer_like(&self) -> bool {
++    pub fn is_pointer_like(&self) -> bool {
+         match &self.kind {
+             TyKind::Ptr(_) | TyKind::Array(_, _) => true,
+             _ => false
+@@ -833,7 +833,7 @@ impl<'a> Parser<'a> {
+                 node = ExprNode {
+                     kind: ExprKind::Eq(P::new(node), P::new(self.relational())),
+                     loc,
+-                    ty: Ty::int()
++                    ty: Ty::long()
+                 };
+             }
+             else if self.peek_is("!=") {
+@@ -841,7 +841,7 @@ impl<'a> Parser<'a> {
+                 node = ExprNode {
+                     kind: ExprKind::Ne(P::new(node), P::new(self.relational())),
+                     loc,
+-                    ty: Ty::int()
++                    ty: Ty::long()
+                 };
+             }
+             else {
+@@ -862,7 +862,7 @@ impl<'a> Parser<'a> {
+                 node = ExprNode {
+                     kind: ExprKind::Lt(P::new(node), P::new(self.add())),
+                     loc,
+-                    ty: Ty::int()
++                    ty: Ty::long()
+                 };
+             }
+             else if self.peek_is("<=") {
+@@ -870,7 +870,7 @@ impl<'a> Parser<'a> {
+                 node = ExprNode {
+                     kind: ExprKind::Le(P::new(node), P::new(self.add())),
+                     loc,
+-                    ty: Ty::int()
++                    ty: Ty::long()
+                 };
+             }
+             else if self.peek_is(">") {
+@@ -878,7 +878,7 @@ impl<'a> Parser<'a> {
+                 node = ExprNode {
+                     kind: ExprKind::Lt(P::new(self.add()), P::new(node)),
+                     loc,
+-                    ty: Ty::int()
++                    ty: Ty::long()
+                 };
+             }
+             else if self.peek_is(">=") {
+@@ -886,7 +886,7 @@ impl<'a> Parser<'a> {
+                 node = ExprNode {
+                     kind: ExprKind::Le(P::new(self.add()), P::new(node)),
+                     loc,
+-                    ty: Ty::int()
++                    ty: Ty::long()
+                 };
+             }
+             else {
+@@ -939,7 +939,7 @@ impl<'a> Parser<'a> {
+         if lhs.ty.is_pointer_like() && rhs.ty.is_integer_like() {
+             let base_ty = lhs.ty.base_ty().unwrap();
+             let size = P::new(synth_num(base_ty.size.try_into().unwrap(), loc));
+-            let rhs = synth_mul(size, rhs, loc);
++            let rhs = synth_mul(rhs, size, loc);
+             return synth_add(lhs, P::new(rhs), loc)
+         }
+ 
+@@ -954,7 +954,7 @@ impl<'a> Parser<'a> {
+         if lhs.ty.is_pointer_like() && rhs.ty.is_integer_like() {
+             let base_ty = lhs.ty.base_ty().unwrap();
+             let size = P::new(synth_num(base_ty.size.try_into().unwrap(), loc));
+-            let rhs = synth_mul(size, rhs, loc);
++            let rhs = synth_mul(rhs, size, loc);
+             return synth_sub(lhs, P::new(rhs), loc);
+         }
+ 
+@@ -962,7 +962,7 @@ impl<'a> Parser<'a> {
+             let base_ty = lhs.ty.base_ty().unwrap();
+             let size: i64 = base_ty.size.try_into().unwrap();
+             let mut sub = synth_sub(lhs, rhs, loc);
+-            sub.ty = Ty::int();
++            sub.ty = Ty::long();
+             return synth_div(P::new(sub), P::new(synth_num(size, loc)), loc);
+         }
+ 
+@@ -1107,7 +1107,7 @@ impl<'a> Parser<'a> {
+         match self.peek().kind {
+             TokenKind::Num(val) => {
+                 let loc = self.advance().loc;
+-                return ExprNode { kind: ExprKind::Num(val), loc, ty: Ty::int() }
++                return ExprNode { kind: ExprKind::Num(val), loc, ty: Ty::long() }
+             },
+             TokenKind::Keyword => {
+                 let loc = self.peek().loc;
+@@ -1407,7 +1407,7 @@ impl<'a> Parser<'a> {
+ }
+ 
+ fn synth_num(v: i64, loc: SourceLocation) -> ExprNode {
+-    ExprNode { kind: ExprKind::Num(v), loc, ty: Ty::int() }
++    ExprNode { kind: ExprKind::Num(v), loc, ty: Ty::long() }
+ }
+ 
+ fn synth_add(lhs: P<ExprNode>, rhs: P<ExprNode>, loc: SourceLocation) -> ExprNode {
