@@ -17,12 +17,17 @@ pub struct Token {
 type P<A> = Box<A>;
 
 pub enum NodeKind {
+    // Primary
     Num { val: i32 },
 
+    // Binary
     Add { lhs: P<Node>, rhs: P<Node> },
     Sub { lhs: P<Node>, rhs: P<Node> },
     Mul { lhs: P<Node>, rhs: P<Node> },
     Div { lhs: P<Node>, rhs: P<Node> },
+
+    // Unary
+    Neg { expr: P<Node> },
 }
 
 pub struct Node {
@@ -174,7 +179,7 @@ impl<'a> Parser<'a> {
     }
 
     fn mul(&mut self) -> Node {
-        let mut node = self.primary();
+        let mut node = self.unary();
 
         while let TokenKind::Punct = self.peek().kind {
             if self.r#match("*") {
@@ -182,7 +187,7 @@ impl<'a> Parser<'a> {
                 node = Node {
                     kind: NodeKind::Mul {
                         lhs: P::new(node),
-                        rhs: P::new(self.mul()),
+                        rhs: P::new(self.unary()),
                     },
                 }
             } else if self.r#match("/") {
@@ -190,7 +195,7 @@ impl<'a> Parser<'a> {
                 node = Node {
                     kind: NodeKind::Div {
                         lhs: P::new(node),
-                        rhs: P::new(self.mul()),
+                        rhs: P::new(self.unary()),
                     },
                 }
             } else {
@@ -199,6 +204,26 @@ impl<'a> Parser<'a> {
         }
 
         node
+    }
+
+    // unary = ("+" | "-") unary
+    //       | primary
+    fn unary(&mut self) -> Node {
+        if self.r#match("+") {
+            self.advance();
+            return self.unary();
+        }
+
+        if self.r#match("-") {
+            self.advance();
+            return Node {
+                kind: NodeKind::Neg {
+                    expr: P::new(self.unary()),
+                },
+            };
+        }
+
+        self.primary()
     }
 
     fn primary(&mut self) -> Node {
@@ -316,6 +341,10 @@ impl<'a> Codegen<'a> {
                 self.pop("%rdi");
                 println!("  cqo");
                 println!("  idiv %rdi, %rax");
+            }
+            NodeKind::Neg { ref expr } => {
+                self.expr(expr);
+                println!("  neg %rax");
             }
         };
     }
