@@ -2,6 +2,7 @@ use crate::ErrorReporting;
 use crate::Token;
 use crate::TokenKind;
 
+#[derive(Debug, Clone, PartialEq)]
 pub struct Lexer<'a> {
     src: &'a [u8],
     index: usize,
@@ -72,7 +73,7 @@ impl<'a> Lexer<'a> {
                 });
             } else if matches!(
                 c,
-                b'!' | b'=' | b'>' | b'<' | b'(' | b')' | b'+' | b'-' | b'*' | b'/'
+                b'!' | b'=' | b'>' | b'<' | b'(' | b')' | b'+' | b'-' | b'*' | b'/' | b';'
             ) {
                 match (self.peek(), self.peek_next()) {
                     (Some(b'!') | Some(b'=') | Some(b'>') | Some(b'<'), Some(b'=')) => {
@@ -85,7 +86,7 @@ impl<'a> Lexer<'a> {
                     }
                     (
                         Some(b'<') | Some(b'>') | Some(b'(') | Some(b')') | Some(b'+') | Some(b'-')
-                        | Some(b'*') | Some(b'/'),
+                        | Some(b'*') | Some(b'/') | Some(b';'),
                         _,
                     ) => {
                         toks.push(Token {

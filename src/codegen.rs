@@ -18,10 +18,14 @@ impl<'a> Codegen<'a> {
         Self { src, depth: 0 }
     }
 
-    pub fn program(&mut self, node: &Node) {
+    pub fn program(&mut self, nodes: &[Node]) {
         println!("  .globl main");
         println!("main:");
-        self.expr(node);
+
+        for node in nodes {
+            self.stmt(node);
+        }
+
         println!("  ret");
     }
 
@@ -33,6 +37,10 @@ impl<'a> Codegen<'a> {
     fn pop(&mut self, arg: &str) {
         println!("  pop {}", arg);
         self.depth -= 1;
+    }
+
+    fn stmt(&mut self, node: &Node) {
+        self.expr(node);
     }
 
     fn expr(&mut self, node: &Node) {
@@ -107,6 +115,7 @@ impl<'a> Codegen<'a> {
                 println!("  setl %al");
                 println!("  movzb %al, %rax");
             }
+            NodeKind::ExprStmt { .. } => {}
         };
     }
 }

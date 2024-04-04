@@ -1,11 +1,11 @@
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum TokenKind {
     Punct,
     Num { val: i32 },
     Eof,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Token {
     offset: usize,
     length: usize,
@@ -14,6 +14,7 @@ pub struct Token {
 
 type P<A> = Box<A>;
 
+#[derive(Debug, Clone, PartialEq)]
 pub enum NodeKind {
     // Primary
     Num { val: i32 },
@@ -30,8 +31,12 @@ pub enum NodeKind {
 
     // Unary
     Neg { expr: P<Node> },
+
+    // Statement
+    ExprStmt { lhs: P<Node>, next: Option<P<Node>> },
 }
 
+#[derive(Debug, Clone, PartialEq)]
 pub struct Node {
     kind: NodeKind,
 }

@@ -5,6 +5,7 @@ use crate::Token;
 use crate::TokenKind;
 use crate::P;
 
+#[derive(Debug, Clone)]
 pub struct Parser<'a> {
     src: &'a [u8],
     toks: &'a [Token],
@@ -29,9 +30,29 @@ impl<'a> Parser<'a> {
         }
     }
 
+    pub fn parse(&mut self) -> Vec<Node> {
+        let mut statements = vec![];
+        while !self.is_done() {
+            statements.push(self.stmt());
+        }
+        statements
+    }
+
     // expr = equality
-    pub fn expr(&mut self) -> Node {
+    fn expr(&mut self) -> Node {
         self.equality()
+    }
+
+    // stmt = expr-stmt
+    fn stmt(&mut self) -> Node {
+        self.expr_stmt()
+    }
+
+    // expr-stmt = expr ";"
+    fn expr_stmt(&mut self) -> Node {
+        let node = self.expr();
+        self.skip(";");
+        node
     }
 
     // equality = relational ("==" relational | "!=" relational)*
@@ -205,12 +226,13 @@ impl<'a> Parser<'a> {
             }
             _ => {}
         };
-        self.error_tok(self.peek(), "expected an expression")
+        self.error_tok(self.peek(), "expected an expression");
     }
 
     fn peek(&self) -> &Token {
         &self.toks[self.tok_index]
     }
+
     fn advance(&mut self) {
         if self.tok_index >= self.toks.len() {
             panic!("Unexpected end of file");
@@ -235,5 +257,9 @@ impl<'a> Parser<'a> {
             TokenKind::Eof => {}
             _ => self.error_tok(self.peek(), "extra token"),
         }
+    }
+
+    fn is_done(&self) -> bool {
+        matches!(self.peek().kind, TokenKind::Eof)
     }
 }
