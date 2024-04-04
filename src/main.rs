@@ -17,11 +17,10 @@ fn main() {
 
     let mut parser = Parser::new(src, &toks);
 
-    let nodes = parser.parse();
-
+    let (nodes, vars) = parser.parse();
     parser.ensure_done();
 
-    let mut codegen = Codegen::new(src);
+    let mut codegen = Codegen::new(src, vars);
     codegen.program(&nodes);
 
     assert!(codegen.depth == 0);

@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use crate::ErrorReporting;
 use crate::Node;
 use crate::NodeKind;
@@ -10,6 +12,7 @@ pub struct Parser<'a> {
     src: &'a [u8],
     toks: &'a [Token],
     tok_index: usize,
+    vars: HashMap<String, usize>,
 }
 
 impl<'a> ErrorReporting for Parser<'a> {
@@ -27,15 +30,16 @@ impl<'a> Parser<'a> {
             src,
             toks,
             tok_index: 0,
+            vars: HashMap::default(),
         }
     }
 
-    pub fn parse(&mut self) -> Vec<Node> {
+    pub fn parse(&mut self) -> (Vec<Node>, HashMap<String, usize>) {
         let mut statements = vec![];
         while !self.is_done() {
             statements.push(self.stmt());
         }
-        statements
+        (statements, self.vars.clone())
     }
 
     // expr = assign
@@ -226,7 +230,8 @@ impl<'a> Parser<'a> {
 
     // primary = "(" expr ")" | ident | num
     fn primary(&mut self) -> Node {
-        match self.peek().kind {
+        let c = self.peek().clone();
+        match c.kind {
             TokenKind::Num { val } => {
                 self.advance();
                 return Node {
@@ -241,16 +246,23 @@ impl<'a> Parser<'a> {
                     return node;
                 }
             }
-            TokenKind::Ident { name } => {
+            TokenKind::Ident { ref name } => {
+                if !self.vars.contains_key(name) {
+                    let offset = (self.vars.len() + 1) * 8;
+                    self.vars.insert(name.to_string(), offset);
+                }
+
                 let node = Node {
-                    kind: NodeKind::Var { name },
+                    kind: NodeKind::Var {
+                        name: name.to_string(),
+                    },
                 };
                 self.advance();
                 return node;
             }
             _ => {}
         };
-        self.error_tok(self.peek(), "expected an expression");
+        self.error_tok(&c, "expected an expression");
     }
 
     fn peek(&self) -> &Token {

@@ -1,10 +1,14 @@
+use std::collections::HashMap;
+
 use crate::ErrorReporting;
 use crate::Node;
 use crate::NodeKind;
 
+#[derive(Debug, Clone, PartialEq)]
 pub struct Codegen<'a> {
     pub src: &'a [u8],
     pub depth: i64,
+    pub vars: HashMap<String, usize>,
 }
 
 impl<'a> ErrorReporting for Codegen<'a> {
@@ -14,8 +18,12 @@ impl<'a> ErrorReporting for Codegen<'a> {
 }
 
 impl<'a> Codegen<'a> {
-    pub fn new(src: &'a [u8]) -> Self {
-        Self { src, depth: 0 }
+    pub fn new(src: &'a [u8], vars: HashMap<String, usize>) -> Self {
+        Self {
+            src,
+            depth: 0,
+            vars,
+        }
     }
 
     pub fn program(&mut self, nodes: &[Node]) {
@@ -25,7 +33,7 @@ impl<'a> Codegen<'a> {
         // Prologue
         println!("  push %rbp");
         println!("  mov %rsp, %rbp");
-        println!("  sub $208, %rsp");
+        println!("  sub ${}, %rsp", self.vars.len() * 8);
         println!();
 
         for node in nodes {
@@ -56,9 +64,10 @@ impl<'a> Codegen<'a> {
 
     fn addr(&mut self, node: &Node) {
         match node.kind {
-            NodeKind::Var { name } => {
-                let offset: i32 = ((name - b'a' + 1) * 8).into();
-                println!("  lea {}(%rbp), %rax", -offset);
+            NodeKind::Var { ref name } => {
+                // can't fail, otherwise its a reference error.
+                let offset = *self.vars.get(name).unwrap();
+                println!("  lea -{}(%rbp), %rax", offset);
             }
             _ => self.error_at(0, "not an lvalue"),
         }

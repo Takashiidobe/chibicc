@@ -98,13 +98,22 @@ impl<'a> Lexer<'a> {
                     }
                     _ => {}
                 }
-            } else if c.is_ascii_alphabetic() {
-                toks.push(Token {
-                    offset: self.index,
-                    length: 1,
-                    kind: TokenKind::Ident { name: c },
-                });
+            } else if c.is_ascii_alphabetic() || c == b'_' {
+                let start = self.index;
+                let mut var = vec![c];
                 self.index += 1;
+                while self.peek().is_some_and(|c| c.is_ascii_alphabetic()) {
+                    var.push(self.peek().unwrap());
+                    self.index += 1;
+                }
+
+                toks.push(Token {
+                    offset: start,
+                    length: var.len(),
+                    kind: TokenKind::Ident {
+                        name: String::from_utf8_lossy(&var).to_string(),
+                    },
+                });
             } else {
                 dbg!(String::from_utf8_lossy(&self.src[self.index..]));
                 self.error_at(self.index, "invalid token")
