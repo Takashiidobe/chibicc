@@ -1,55 +1,43 @@
-use std::process::exit;
-
 #[derive(Default, Debug, Clone, PartialEq)]
-enum TokenKind {
+pub enum TokenKind {
     Punct,
-    Num,
+    Num {
+        val: i32,
+    },
     #[default]
     Eof,
 }
 
 #[derive(Default, Debug, Clone, PartialEq)]
-struct Token {
+pub struct Token {
     kind: TokenKind,
-    val: Option<i32>,
     loc: usize,
     len: usize,
-    raw: String,
 }
 
 impl Token {
-    pub fn new(kind: TokenKind, start: usize, end: usize) -> Self {
-        Self {
-            kind,
-            loc: start,
-            len: end - start,
-            val: None,
-            raw: String::default(),
-        }
-    }
-
-    pub fn equal(&self, op: char) -> bool {
-        self.raw == op.to_string()
+    pub fn new(kind: TokenKind, loc: usize, len: usize) -> Self {
+        Self { kind, loc, len }
     }
 
     pub fn get_number(&self) -> i32 {
-        if self.kind != TokenKind::Num {
-            eprintln!("expected a number");
-            exit(1);
+        match self.kind {
+            TokenKind::Punct | TokenKind::Eof => panic!("expected a number"),
+            TokenKind::Num { val } => val,
         }
-        // safe cause it is a number
-        self.val.unwrap()
     }
 }
 
-struct Scanner {
+pub struct Compiler {
+    program: String,
     chars: Vec<char>,
     index: usize,
 }
 
-impl Scanner {
+impl Compiler {
     pub fn new(source: &str) -> Self {
         Self {
+            program: source.to_string(),
             chars: source.chars().collect(),
             index: 0,
         }
@@ -99,29 +87,74 @@ impl Scanner {
                 let val = self.number();
                 let end = self.index;
 
-                let mut token = Token::new(TokenKind::Num, start, end);
-                token.val = Some(val);
-                token.len = end - start;
+                let token = Token::new(TokenKind::Num { val }, start, end - start);
 
                 tokens.push(token);
                 continue;
             }
             if c == Some('+') || c == Some('-') {
-                let mut token = Token::new(TokenKind::Punct, self.index, self.index + 1);
-                token.raw = c.unwrap().to_string();
+                let token = Token::new(TokenKind::Punct, self.index, 1);
                 self.index += 1;
                 tokens.push(token);
                 continue;
             }
 
-            eprintln!("invalid token");
-            exit(1);
+            panic!("invalid token");
         }
 
-        let eof_token = Token::new(TokenKind::Eof, self.index, self.index);
+        let eof_token = Token::new(TokenKind::Eof, self.index, 1);
         tokens.push(eof_token);
 
         tokens
+    }
+
+    pub fn compile(&mut self) {
+        let tokens = self.tokenize();
+
+        println!("  .globl main");
+        println!("main:");
+
+        if let Some(tok) = tokens.first() {
+            println!("  mov ${}, %rax", tok.get_number());
+        }
+
+        let mut i = 1;
+
+        while i < tokens.len() {
+            let token = &tokens[i];
+            if token.kind == TokenKind::Eof {
+                break;
+            }
+
+            if self.equal(token, "+") {
+                i += 1;
+                println!("  add ${}, %rax", tokens[i].get_number());
+                i += 1;
+            } else if self.equal(token, "-") {
+                i += 1;
+                println!("  sub ${}, %rax", tokens[i].get_number());
+                i += 1;
+            } else {
+                self.error_tok(token, "invalid token");
+            }
+        }
+
+        println!("  ret");
+    }
+
+    fn equal(&self, tok: &Token, s: &str) -> bool {
+        self.chars[tok.loc..(tok.loc + tok.len)] == s.chars().collect::<Vec<_>>()
+    }
+
+    fn error_at(&self, offset: usize, msg: &str) -> ! {
+        eprintln!("{}", self.program);
+        eprint!("{: <1$}", "", offset);
+        eprintln!("^ {}", msg);
+        panic!();
+    }
+
+    fn error_tok(&self, tok: &Token, msg: &str) -> ! {
+        self.error_at(tok.loc, msg);
     }
 }
 
@@ -129,40 +162,9 @@ fn main() {
     let args: Vec<_> = std::env::args().collect();
     if args.len() != 2 {
         eprintln!("{}: invalid number of arguments", args.len());
-        exit(1);
+        panic!();
     }
 
-    let mut scanner = Scanner::new(&args[1]);
-    let tokens = scanner.tokenize();
-
-    println!("  .globl main");
-    println!("main:");
-
-    if let Some(tok) = tokens.first() {
-        println!("  mov ${}, %rax", tok.get_number());
-    }
-
-    let mut i = 1;
-
-    while i < tokens.len() {
-        let token = &tokens[i];
-        if token.kind == TokenKind::Eof {
-            break;
-        }
-
-        if token.equal('+') {
-            i += 1;
-            println!("  add ${}, %rax", tokens[i].get_number());
-            i += 1;
-        } else if token.equal('-') {
-            i += 1;
-            println!("  sub ${}, %rax", tokens[i].get_number());
-            i += 1;
-        } else {
-            eprintln!("Invalid token: {:?}", token);
-            exit(1);
-        }
-    }
-
-    println!("  ret");
+    let mut compiler = Compiler::new(&args[1]);
+    compiler.compile()
 }
