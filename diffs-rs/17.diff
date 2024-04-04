@@ -1,0 +1,308 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index 23c18f4..a724641 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -5,3 +5,12 @@ version = 3
+ [[package]]
+ name = "chibicc"
+ version = "0.1.0"
++dependencies = [
++ "lazy_static",
++]
++
++[[package]]
++name = "lazy_static"
++version = "1.4.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "e2abad23fbc42b3700f2f279844dc832adb2b2eb069b2df918f455c4e18cc646"
+diff --git a/Cargo.toml b/Cargo.toml
+index 0dcd8ce..ea4a6bb 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -6,3 +6,4 @@ edition = "2021"
+ # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+ 
+ [dependencies]
++lazy_static = "1.4.0"
+\ No newline at end of file
+diff --git a/src/codegen.rs b/src/codegen.rs
+index aece48f..a309afa 100644
+--- a/src/codegen.rs
++++ b/src/codegen.rs
+@@ -1,29 +1,15 @@
+-use std::collections::HashMap;
+-
+ use crate::errors::ErrorReporting;
+-use crate::parser::{TopLevelNode, TopLevelKind, StmtNode, StmtKind, ExprNode, ExprKind, AsciiStr};
+-
+-
+-struct GenFunction {
+-    offsets: HashMap<AsciiStr, i64>,
+-    stack_size: usize
+-}
+-
+-impl GenFunction {
+-    fn new(node: &TopLevelNode) -> Self {
+-        match node.kind {
+-            TopLevelKind::Function(ref locals, _) => {
+-                let mut offset = 0;
+-                let mut offsets = HashMap::new();
+-                for local in locals {
+-                    offset -= 8;
+-                    offsets.insert(local.to_owned(), offset);
+-                }
+-                Self {
+-                    offsets,
+-                    stack_size: align_to(-offset, 16),
+-                }
++use crate::parser::{TopLevelNode, TopLevelKind, StmtNode, StmtKind, ExprNode, ExprKind};
++
++fn update_stack_info(node: &mut TopLevelNode) {
++    match node.kind {
++        TopLevelKind::SourceUnit(ref mut locals, _, ref mut stack_size) => {
++            let mut offset = 0;
++            for local in locals {
++                offset -= 8;
++                local.borrow_mut().stack_offset = offset;
+             }
++            *stack_size = align_to(-offset, 16);
+         }
+     }
+ }
+@@ -31,8 +17,7 @@ impl GenFunction {
+ pub struct Codegen<'a> {
+     src: &'a [u8],
+     depth: i64,
+-    top_node: &'a TopLevelNode,
+-    curr_gen_fn: GenFunction,
++    top_node: &'a TopLevelNode<'a>,
+     id_count: usize,
+ }
+ 
+@@ -41,39 +26,39 @@ impl<'a> ErrorReporting for Codegen<'a> {
+ }
+ 
+ impl<'a> Codegen<'a> {
+-    pub fn new(src: &'a [u8], node: &'a TopLevelNode) -> Self {
++    pub fn new(src: &'a [u8], node: &'a mut TopLevelNode) -> Self {
++        update_stack_info(node);
+         Self {
+             src,
+             depth: 0,
+             top_node: node,
+-            curr_gen_fn: GenFunction::new(node),
+             id_count: 0
+         }
+     }
+ 
+     pub fn program(&mut self) {
+-        println!("  .globl main");
+-        println!("main:");
++        match self.top_node.kind {
++            TopLevelKind::SourceUnit(_, ref body, stack_size) => {
++                println!("  .globl main");
++                println!("main:");
+ 
+-        // Prologue
+-        println!("  push %rbp");
+-        println!("  mov %rsp, %rbp");
+-        println!("  sub ${}, %rsp", self.curr_gen_fn.stack_size);
+-        println!();
++                // Prologue
++                println!("  push %rbp");
++                println!("  mov %rsp, %rbp");
++                println!("  sub ${}, %rsp", stack_size);
++                println!();
+ 
+-        match self.top_node.kind {
+-            TopLevelKind::Function(_, ref body) => {
+                 for stmt in body {
+                     self.stmt(stmt)
+                 }
++
++                println!();
++                println!(".L.return:");
++                println!("  mov %rbp, %rsp");
++                println!("  pop %rbp");
++                println!("  ret");
+             }
+         }
+-
+-        println!();
+-        println!(".L.return:");
+-        println!("  mov %rbp, %rsp");
+-        println!("  pop %rbp");
+-        println!("  ret");
+     }
+ 
+     fn stmt(&mut self, node: &StmtNode) {
+@@ -219,9 +204,8 @@ impl<'a> Codegen<'a> {
+     }
+ 
+     fn addr(&self, expr: &ExprNode) {
+-        if let ExprKind::Var(ref name) = expr.kind {
+-            let offset = self.curr_gen_fn.offsets.get(name).unwrap();
+-            println!("  lea {}(%rbp), %rax", offset);
++        if let ExprKind::Var(ref data) = expr.kind {
++            println!("  lea {}(%rbp), %rax", &data.borrow().stack_offset);
+             return;
+         }
+ 
+@@ -240,6 +224,6 @@ impl<'a> Codegen<'a> {
+     }
+ }
+ 
+-fn align_to(n: i64, align: i64) -> usize {
+-    (((n + align - 1) / align) * align).try_into().unwrap()
++fn align_to(n: i64, align: i64) -> i64 {
++    ((n + align - 1) / align) * align
+ }
+diff --git a/src/lexer.rs b/src/lexer.rs
+index e35b500..6c74d14 100644
+--- a/src/lexer.rs
++++ b/src/lexer.rs
+@@ -1,3 +1,5 @@
++use std::collections::HashSet;
++
+ use crate::errors::ErrorReporting;
+ 
+ #[derive(Debug)]
+@@ -16,11 +18,15 @@ pub struct Token {
+     pub kind: TokenKind
+ }
+ 
+-const KEYWORDS: [&[u8];5] = [
+-    "return".as_bytes(),
+-    "if".as_bytes(), "else".as_bytes(),
+-    "for".as_bytes(), "while".as_bytes()
+-];
++lazy_static! {
++    static ref KEYWORDS: HashSet<&'static [u8]> = {
++        [
++            "return",
++            "if", "else",
++            "for", "while"
++        ].map(|k| k.as_bytes()).into()
++    };
++}
+ 
+ pub struct Lexer<'a> {
+     src: &'a [u8],
+diff --git a/src/main.rs b/src/main.rs
+index f29a758..675d22b 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -1,3 +1,6 @@
++#[macro_use]
++extern crate lazy_static;
++
+ use std::env;
+ 
+ use crate::{lexer::Lexer, parser::Parser, codegen::Codegen};
+@@ -21,10 +24,10 @@ fn main() {
+ 
+     let mut parser = Parser::new(src, &toks);
+ 
+-    let node = parser.function();
++    let mut node = parser.function();
+     parser.ensure_done();
+ 
+-    let mut codegen = Codegen::new(src, &node);
++    let mut codegen = Codegen::new(src, &mut node);
+     codegen.program();
+     codegen.sanity_checks();
+ }
+\ No newline at end of file
+diff --git a/src/parser.rs b/src/parser.rs
+index 6ecdb07..7744ea2 100644
+--- a/src/parser.rs
++++ b/src/parser.rs
+@@ -1,9 +1,12 @@
+-use std::collections::HashSet;
++use std::cell::RefCell;
++use std::collections::HashMap;
++use std::rc::Rc;
+ 
+ use crate::lexer::{Token, TokenKind};
+ use crate::errors::ErrorReporting;
+ 
+ pub type P<A> = Box<A>;
++pub type SP<A> = Rc<RefCell<A>>;
+ pub type AsciiStr = Vec<u8>;
+ 
+ #[derive(Debug)]
+@@ -11,10 +14,16 @@ pub struct Node<Kind> {
+     pub kind: Kind,
+ }
+ 
++#[derive(Debug)]
++pub struct VarData {
++    pub name: AsciiStr,
++    pub stack_offset: i64
++}
++
+ #[derive(Debug)]
+ pub enum ExprKind {
+     Num(i32),
+-    Var(AsciiStr),
++    Var(SP<VarData>),
+ 
+     Add(P<ExprNode>, P<ExprNode>),
+     Sub(P<ExprNode>, P<ExprNode>),
+@@ -41,18 +50,18 @@ pub enum StmtKind {
+ 
+ #[derive(Debug)]
+ pub enum TopLevelKind {
+-    Function(Vec<AsciiStr>, Vec<StmtNode>)
++    SourceUnit(Vec<SP<VarData>>, Vec<StmtNode>, i64)
+ }
+ 
+ pub type ExprNode = Node<ExprKind>;
+ pub type StmtNode = Node<StmtKind>;
+-pub type TopLevelNode = Node<TopLevelKind>;
++pub type TopLevelNode<'a> = Node<TopLevelKind>;
+ 
+ pub struct Parser<'a> {
+     src: &'a [u8],
+     toks: &'a [Token],
+     tok_index: usize,
+-    vars: HashSet<AsciiStr>,
++    vars: HashMap<AsciiStr, SP<VarData>>,
+ }
+ 
+ impl<'a> ErrorReporting for Parser<'a> {
+@@ -68,7 +77,7 @@ impl<'a> Parser<'a> {
+             src,
+             toks,
+             tok_index: 0,
+-            vars: HashSet::new()
++            vars: HashMap::new()
+         }
+     }
+ 
+@@ -78,7 +87,11 @@ impl<'a> Parser<'a> {
+         while !self.is_done() {
+             stmts.push(self.stmt())
+         }
+-        TopLevelNode { kind: TopLevelKind::Function(self.vars.clone().into_iter().collect(), stmts) }
++        let mut locals = Vec::new();
++        for el in self.vars.values() {
++            locals.push(el.clone());
++        }
++        TopLevelNode { kind: TopLevelKind::SourceUnit(locals, stmts, -1) }
+     }
+ 
+     // stmt = "return" expr ";"
+@@ -323,8 +336,10 @@ impl<'a> Parser<'a> {
+             }
+             TokenKind::Ident => {
+                 let name = self.tok_source(self.peek()).to_owned();
+-                let node = ExprNode { kind: ExprKind::Var(name.clone()) };
+-                self.vars.insert(name);
++                let var_data = self.vars.entry(name.clone()).or_insert_with(||
++                    Rc::new(RefCell::new(VarData { name, stack_offset: -1 }))
++                );
++                let node = ExprNode { kind: ExprKind::Var(var_data.clone()) };
+                 self.advance();
+                 return node;
+             }

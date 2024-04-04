@@ -1,0 +1,173 @@
+diff --git a/src/codegen.rs b/src/codegen.rs
+index e466225..7fcacc5 100644
+--- a/src/codegen.rs
++++ b/src/codegen.rs
+@@ -32,7 +32,8 @@ pub struct Codegen<'a> {
+     src: &'a [u8],
+     depth: i64,
+     top_node: &'a TopLevelNode,
+-    curr_gen_fn: GenFunction
++    curr_gen_fn: GenFunction,
++    id_count: usize,
+ }
+ 
+ impl<'a> ErrorReporting for Codegen<'a> {
+@@ -45,7 +46,8 @@ impl<'a> Codegen<'a> {
+             src,
+             depth: 0,
+             top_node: node,
+-            curr_gen_fn: GenFunction::new(node)
++            curr_gen_fn: GenFunction::new(node),
++            id_count: 0
+         }
+     }
+ 
+@@ -86,7 +88,19 @@ impl<'a> Codegen<'a> {
+                     self.stmt(stmt)
+                 }
+             },
+-
++            StmtKind::If(ref cond, ref then_stmt, ref else_stmt) => {
++                let id = self.next_id();
++                self.expr(cond);
++                println!("  cmp $0, %rax");
++                println!("  je .L.else.{}", id);
++                self.stmt(then_stmt);
++                println!("  jmp .L.end.{}", id);
++                println!(".L.else.{}:", id);
++                if let Some(else_stmt) = else_stmt {
++                    self.stmt(else_stmt);
++                }
++                println!(".L.end.{}:", id);
++            }
+         }
+     }
+ 
+@@ -196,6 +210,11 @@ impl<'a> Codegen<'a> {
+         panic!("not an lvalue: {:?}", expr);
+     }
+ 
++    fn next_id(&mut self) -> usize {
++        self.id_count += 1;
++        return self.id_count;
++    }
++
+     pub fn sanity_checks(&self) {
+         if self.depth != 0 {
+             panic!("depth is not 0");
+diff --git a/src/lexer.rs b/src/lexer.rs
+index e1230ac..794747e 100644
+--- a/src/lexer.rs
++++ b/src/lexer.rs
+@@ -16,8 +16,9 @@ pub struct Token {
+     pub kind: TokenKind
+ }
+ 
+-const KEYWORDS: [&[u8];1] = [
+-    "return".as_bytes()
++const KEYWORDS: [&[u8];3] = [
++    "return".as_bytes(),
++    "if".as_bytes(), "else".as_bytes()
+ ];
+ 
+ pub struct Lexer<'a> {
+@@ -32,15 +33,15 @@ impl<'a> Lexer<'a> {
+     pub fn new(src: &'a [u8]) -> Self {
+         Self { src }
+     }
+-  
++
+     pub fn tokenize(&self) -> Vec<Token> {
+         let mut toks = Vec::new();
+         let mut offset = 0;
+         let src = self.src;
+-    
++
+         while offset < src.len() {
+             let c = src[offset];
+-    
++
+             if c.is_ascii_whitespace() {
+                 offset += 1;
+             }
+@@ -90,7 +91,7 @@ impl<'a> Lexer<'a> {
+                 }
+             }
+         }
+-    
++
+         toks.push(Token { offset, length: 0, kind: TokenKind::Eof });
+         toks
+     }
+@@ -113,8 +114,8 @@ fn read_int(buf: &[u8]) -> (i32, usize) {
+ }
+ 
+ fn ispunct(c: u8) -> bool {
+-    return c == b';' || c == b'=' || c == b'{' || c == b'}' || 
+-        c == b'+' || c == b'-' || c == b'*' || c == b'/' || 
++    return c == b';' || c == b'=' || c == b'{' || c == b'}' ||
++        c == b'+' || c == b'-' || c == b'*' || c == b'/' ||
+         c == b'(' || c == b')' || c == b'<' || c == b'>';
+ }
+ 
+diff --git a/src/parser.rs b/src/parser.rs
+index a15c215..bc6fd5f 100644
+--- a/src/parser.rs
++++ b/src/parser.rs
+@@ -34,7 +34,8 @@ pub enum ExprKind {
+ pub enum StmtKind {
+     Expr(ExprNode),
+     Return(ExprNode),
+-    Block(Vec<StmtNode>)
++    Block(Vec<StmtNode>),
++    If(P<ExprNode>, P<StmtNode>, Option<P<StmtNode>>),
+ }
+ 
+ #[derive(Debug)]
+@@ -80,6 +81,7 @@ impl<'a> Parser<'a> {
+     }
+ 
+     // stmt = "return" expr ";"
++    //      | "if" "(" expr ")" stmt ("else" stmt)?
+     //      | "{" compound-stmt
+     //      | expr-stmt
+     fn stmt(&mut self) -> StmtNode {
+@@ -90,6 +92,20 @@ impl<'a> Parser<'a> {
+             return StmtNode { kind: StmtKind::Return(expr) }
+         }
+ 
++        if self.tok_is("if") {
++            self.advance();
++            self.skip("(");
++            let cond = P::new(self.expr());
++            self.skip(")");
++            let then_stmt = P::new(self.stmt());
++            let mut else_stmt = None;
++            if self.tok_is("else") {
++                self.advance();
++                else_stmt = Some(P::new(self.stmt()));
++            }
++            return StmtNode { kind: StmtKind::If(cond, then_stmt, else_stmt) }
++        }
++
+         if self.tok_is("{") {
+             self.advance();
+             return self.compound_stmt()
+diff --git a/test.sh b/test.sh
+index 887b4e1..8fd937e 100755
+--- a/test.sh
++++ b/test.sh
+@@ -66,6 +66,13 @@ assert 3 '{ 1; 2; return 3; }'
+ assert 3 '{ {1; {2;} return 3;} }'
+ assert 5 '{ ;;; return 5; }'
+ 
++assert 3 '{ if (0) return 2; return 3; }'
++assert 3 '{ if (1-1) return 2; return 3; }'
++assert 2 '{ if (1) return 2; return 3; }'
++assert 2 '{ if (2-1) return 2; return 3; }'
++assert 4 '{ if (0) { 1; 2; return 3; } else { return 4; } }'
++assert 3 '{ if (1) { 1; 2; return 3; } else { return 4; } }'
++
+ rm -f tmp tmp.s
+ 
+ echo OK

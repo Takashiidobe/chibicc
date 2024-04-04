@@ -1,0 +1,3 @@
+[build]
+command = "cd notes && mdbook build"
+publish = "notes/book/"

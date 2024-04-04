@@ -1,0 +1,12 @@
+#!/usr/bin/sh
+
+remote="$1"
+url="$2"
+
+# tag_name="$(git log --pretty=oneline --pretty=format:%h -1)"
+#
+# git push origin "$tag_name"
+
+# ntl deploy --prod
+
+exit 0

@@ -1,0 +1,185 @@
+diff --git a/src/codegen.rs b/src/codegen.rs
+index b9a8065..4a7c29e 100644
+--- a/src/codegen.rs
++++ b/src/codegen.rs
+@@ -342,6 +342,12 @@ impl<'a> Codegen<'a> {
+                         self.stmt(stmt);
+                     }
+                 }
++            },
++            ExprKind::Cast(expr) => {
++                self.expr(expr);
++                if let Some(instr) = cast_instr(&expr.ty, &node.ty) {
++                    wln!(self, "  {}", instr);
++                }
+             }
+         };
+     }
+@@ -474,6 +480,49 @@ fn acc_reg(ty: &Rc<Ty>) -> &str {
+     }
+ }
+ 
++// Casting
++
++enum CastType {
++    I8 = 0, I16, I32, I64
++}
++
++lazy_static! {
++    static ref CAST_TABLE: [[Option<&'static str>;4];4] = {
++        let i32i8  = Some("movsbl %al, %eax");
++        let i32i16 = Some("movswl %ax, %eax");
++        let i32i64 = Some("movsxd %eax, %rax");
++        [
++            [  None,   None, None, i32i64],
++            [ i32i8,   None, None, i32i64],
++            [ i32i8, i32i16, None, i32i64],
++            [ i32i8, i32i16, None,   None],
++        ]
++    };
++}
++
++fn to_cast_type(ty: &Ty) -> CastType {
++    use CastType::*;
++    match ty.kind {
++        TyKind::Char => I8,
++        TyKind::Short => I16,
++        TyKind::Int => I32,
++        _ => I64
++    }
++}
++
++fn cast_instr(from: &Ty, to: &Ty) -> Option<&'static str> {
++    match to.kind {
++        TyKind::Unit => None,
++        _ => {
++            let from_index = to_cast_type(from) as usize;
++            let to_index = to_cast_type(to) as usize;
++            CAST_TABLE[from_index][to_index]
++        }
++    }
++}
++
++// Alignment
++
+ pub trait Alignable : Display + Copy + Add<Output=Self> + Sub<Output=Self> + Div<Output=Self> + Mul<Output=Self> {
+     fn one() -> Self;
+     fn is_zero(self) -> bool;
+diff --git a/src/parser.rs b/src/parser.rs
+index 99970e5..a2b30e2 100644
+--- a/src/parser.rs
++++ b/src/parser.rs
+@@ -133,6 +133,8 @@ pub enum ExprKind {
+     Addr(P<ExprNode>),
+     Deref(P<ExprNode>),
+ 
++    Cast(P<ExprNode>),
++
+     Funcall(AsciiStr, Vec<P<ExprNode>>),
+ 
+     Add(P<ExprNode>, P<ExprNode>),
+@@ -969,16 +971,16 @@ impl<'a> Parser<'a> {
+         self.ctx.error_at(&loc, "invalid operands");
+     }
+ 
+-    // mul = unary ("*" unary | "/" unary)*
++    // mul = cast ("*" cast | "/" cast)*
+     fn mul(&mut self) -> ExprNode {
+-        let mut node = self.unary();
++        let mut node = self.cast();
+ 
+         loop {
+             if self.peek_is("*") {
+                 let loc = self.advance().loc;
+                 let ty = node.ty.clone();
+                 node = ExprNode {
+-                    kind: ExprKind::Mul(P::new(node), P::new(self.unary())),
++                    kind: ExprKind::Mul(P::new(node), P::new(self.cast())),
+                     loc,
+                     ty
+                 };
+@@ -987,7 +989,7 @@ impl<'a> Parser<'a> {
+                 let loc = self.advance().loc;
+                 let ty = node.ty.clone();
+                 node = ExprNode {
+-                    kind: ExprKind::Div(P::new(node), P::new(self.unary())),
++                    kind: ExprKind::Div(P::new(node), P::new(self.cast())),
+                     loc,
+                     ty
+                 };
+@@ -1000,24 +1002,40 @@ impl<'a> Parser<'a> {
+         node
+     }
+ 
+-    // unary = ("+" | "-" | "*" | "&") unary
++    // cast = "(" type-name ")" cast | unary
++    fn cast(&mut self) -> ExprNode {
++        if self.peek_is("(") && self.is_ty_name(self.la_src(1)) {
++            let loc = self.peek().loc;
++            self.advance();
++            let ty = self.typename();
++            self.skip(")");
++            return ExprNode {
++                kind: ExprKind::Cast(P::new(self.cast())),
++                loc,
++                ty,
++            }
++        }
++        self.unary()
++    }
++
++    // unary = ("+" | "-" | "*" | "&") cast
+     //       | postfix
+     fn unary(&mut self) -> ExprNode {
+         if self.peek_is("+") {
+             self.advance();
+-            return self.unary()
++            return self.cast()
+         }
+ 
+         if self.peek_is("-") {
+             let loc = self.advance().loc;
+-            let node = P::new(self.unary());
++            let node = P::new(self.cast());
+             let ty = node.ty.clone();
+             return ExprNode { kind: ExprKind::Neg(node), loc, ty }
+         }
+ 
+         if self.peek_is("&") {
+             let loc = self.advance().loc;
+-            let node = P::new(self.unary());
++            let node = P::new(self.cast());
+             let ty = match &node.ty.kind {
+                 TyKind::Array(base_ty, _) => Ty::ptr(base_ty.clone()),
+                 _ => Ty::ptr(node.ty.clone())
+@@ -1027,7 +1045,7 @@ impl<'a> Parser<'a> {
+ 
+         if self.peek_is("*") {
+             let loc = self.advance().loc;
+-            let node = self.unary();
++            let node = self.cast();
+             return self.synth_deref(P::new(node), loc);
+         }
+ 
+diff --git a/test/cast.c b/test/cast.c
+new file mode 100644
+index 0000000..36b63d8
+--- /dev/null
++++ b/test/cast.c
+@@ -0,0 +1,16 @@
++#include "test.h"
++
++int main() {
++  ASSERT(131585, (int)8590066177);
++  ASSERT(513, (short)8590066177);
++  ASSERT(1, (char)8590066177);
++  ASSERT(1, (long)1);
++  ASSERT(0, (long)&*(int *)0);
++  ASSERT(513, ({ int x=512; *(char *)&x=1; x; }));
++  ASSERT(5, ({ int x=5; long y=(long)&x; *(int*)y; }));
++
++  (void)1;
++
++  printf("OK\n");
++  return 0;
++}

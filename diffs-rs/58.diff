@@ -1,0 +1,181 @@
+diff --git a/src/lexer.rs b/src/lexer.rs
+index 58323d4..65dae6b 100644
+--- a/src/lexer.rs
++++ b/src/lexer.rs
+@@ -27,15 +27,24 @@ pub struct Token {
+ }
+ 
+ lazy_static! {
+-    static ref KEYWORDS: HashSet<&'static [u8]> = {
+-        [
+-            "return",
+-            "if", "else",
+-            "for", "while",
+-            "sizeof",
+-            "int", "char", "struct"
+-        ].map(|k| k.as_bytes()).into()
+-    };
++    static ref KEYWORDS: HashSet<&'static [u8]> = [
++        "return",
++        "if", "else",
++        "for", "while",
++        "sizeof",
++        "int", "char", "struct"
++    ].map(|k| k.as_bytes()).into();
++
++    static ref PUNCTUATION: Vec<&'static [u8]> = [
++        // Longer strings should go first
++        "==", "!=", "<=", ">=",
++        "->",
++
++        ";", "=", "(", ")",
++        "{", "}", ",", ".", "[", "]",
++        "+", "-", "*", "/",
++        "<", ">", "&"
++    ].map(|p| p.as_bytes()).into();
+ }
+ 
+ pub struct Lexer<'a> {
+@@ -283,13 +292,6 @@ fn digit_to_number(digit: u8) -> u8 {
+     panic!("invalid digit");
+ }
+ 
+-fn ispunct(c: u8) -> bool {
+-    return c == b';' || c == b'=' || c == b'(' || c == b')' ||
+-        c == b'{' || c == b'}' || c == b',' || c == b'.' || c == b'[' || c == b']' ||
+-        c == b'+' || c == b'-' || c == b'*' || c == b'/' ||
+-        c == b'<' || c == b'>' || c == b'&';
+-}
+-
+ fn is_ident_start(c: u8) -> bool {
+     c.is_ascii_alphabetic() || c == b'_'
+ }
+@@ -297,19 +299,11 @@ fn is_ident_cont(c: u8) -> bool {
+     is_ident_start(c) || c.is_ascii_digit()
+ }
+ 
+-fn starts_with(src: &[u8], s: &str) -> bool {
+-    return src.starts_with(s.as_bytes());
+-}
+-
+ fn read_punct(src: &[u8]) -> usize {
+-    if starts_with(src, "==") || starts_with(src, "!=")
+-       || starts_with(src, "<=") || starts_with(src, ">=") {
+-        2
+-    }
+-    else if ispunct(src[0]) {
+-        1
+-    }
+-    else {
+-        0
++    for p in PUNCTUATION.iter() {
++        if src.starts_with(p) {
++            return p.len();
++        }
+     }
++    0
+ }
+diff --git a/src/parser.rs b/src/parser.rs
+index a677a1f..a6c06c0 100644
+--- a/src/parser.rs
++++ b/src/parser.rs
+@@ -828,7 +828,7 @@ impl<'a> Parser<'a> {
+         self.postfix()
+     }
+ 
+-    // postfix = "primary" ("[" expr | "." ident "]")*
++    // postfix = "primary" ("[" expr "]" | "." struct_ref | "->" struct_ref)*
+     fn postfix(&mut self) -> ExprNode {
+         let mut node = self.primary();
+         loop {
+@@ -844,32 +844,15 @@ impl<'a> Parser<'a> {
+ 
+             if self.peek_is(".") {
+                 self.advance();
+-                let loc = self.peek().loc;
+-                let name = {
+-                    let name_tok = self.peek();
+-                    if !matches!(name_tok.kind, TokenKind::Ident) {
+-                        self.ctx.error_tok(name_tok, "expected struct member name");
+-                    }
+-                    self.ctx.tok_source(name_tok)
+-                };
+-                let members = {
+-                    match &node.ty.kind {
+-                        TyKind::Struct(members) => members,
+-                        _ => self.ctx.error_at(&node.loc, "not a struct"),
+-                    }
+-                };
+-                let member = members.iter().find(|m| m.name == name).unwrap_or_else(||
+-                    self.ctx.error_at(&loc, "no such member")
+-                ).clone();
+-
+-                let ty = member.ty.clone();
+-                node = ExprNode {
+-                    kind: ExprKind::MemberAccess(Box::new(node), member),
+-                    loc,
+-                    ty,
+-                };
++                node = self.struct_ref(node);
++                continue;
++            }
+ 
+-                self.advance();
++            if self.peek_is("->") {
++                // x -> y is short for (*x).y
++                let loc = self.advance().loc;
++                node = self.synth_deref(Box::new(node), loc);
++                node = self.struct_ref(node);
+                 continue;
+             }
+ 
+@@ -877,6 +860,35 @@ impl<'a> Parser<'a> {
+         }
+     }
+ 
++    // struct_ref = ident
++    fn struct_ref(&mut self, struct_node: ExprNode) -> ExprNode {
++        let loc = self.peek().loc;
++        let name = {
++            let name_tok = self.peek();
++            if !matches!(name_tok.kind, TokenKind::Ident) {
++                self.ctx.error_tok(name_tok, "expected struct member name");
++            }
++            self.ctx.tok_source(name_tok)
++        };
++        self.advance();
++        let members = {
++            match &struct_node.ty.kind {
++                TyKind::Struct(members) => members,
++                _ => self.ctx.error_at(&struct_node.loc, "not a struct"),
++            }
++        };
++        let member = members.iter().find(|m| m.name == name).unwrap_or_else(||
++            self.ctx.error_at(&loc, "no such member")
++        ).clone();
++
++        let ty = member.ty.clone();
++        ExprNode {
++            kind: ExprKind::MemberAccess(Box::new(struct_node), member),
++            loc,
++            ty,
++        }
++    }
++
+     // primary = "(" "{" stmt+ "}" ")"
+     //         | "(" expr ")"
+     //         | "sizeof" unary
+diff --git a/test/struct.c b/test/struct.c
+index 0719b8b..46d51ec 100644
+--- a/test/struct.c
++++ b/test/struct.c
+@@ -33,6 +33,9 @@ int main() {
+   ASSERT(2, ({ struct t {char a[2];}; { struct t {char a[4];}; } struct t y; sizeof(y); }));
+   ASSERT(3, ({ struct t {int x;}; int t=1; struct t y; y.x=2; t+y.x; }));
+ 
++  ASSERT(3, ({ struct t {char a;} x; struct t *y = &x; x.a=3; y->a; }));
++  ASSERT(3, ({ struct t {char a;} x; struct t *y = &x; y->a=3; x.a; }));
++
+   printf("OK\n");
+   return 0;
+ }

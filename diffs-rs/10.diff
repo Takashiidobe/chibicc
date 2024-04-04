@@ -1,0 +1,195 @@
+diff --git a/src/codegen.rs b/src/codegen.rs
+index 1bac773..d297248 100644
+--- a/src/codegen.rs
++++ b/src/codegen.rs
+@@ -68,6 +68,7 @@ impl<'a> Codegen<'a> {
+         }
+ 
+         println!();
++        println!(".L.return:");
+         println!("  mov %rbp, %rsp");
+         println!("  pop %rbp");
+         println!("  ret");
+@@ -76,6 +77,10 @@ impl<'a> Codegen<'a> {
+     fn stmt(&mut self, node: &StmtNode) {
+         match node.kind {
+             StmtKind::Expr(ref expr) => self.expr(expr),
++            StmtKind::Return(ref expr) => {
++                self.expr(expr);
++                println!("  jmp .L.return");
++            },
+         }
+     }
+ 
+diff --git a/src/lexer.rs b/src/lexer.rs
+index 2176263..b67da31 100644
+--- a/src/lexer.rs
++++ b/src/lexer.rs
+@@ -4,6 +4,7 @@ use crate::errors::ErrorReporting;
+ pub enum TokenKind {
+     Punct,
+     Ident,
++    Keyword,
+     Num(i32),
+     Eof
+ }
+@@ -15,6 +16,10 @@ pub struct Token {
+     pub kind: TokenKind
+ }
+ 
++const KEYWORDS: [&[u8];1] = [
++    "return".as_bytes()
++];
++
+ pub struct Lexer<'a> {
+   src: &'a [u8],
+ }
+@@ -57,10 +62,17 @@ impl<'a> Lexer<'a> {
+                 offset += 1;
+                 if !is_ident_cont(src[offset]) { break; }
+             }
++            let name = &src[start_offset..offset];
++            let kind = if KEYWORDS.contains(&name) {
++                TokenKind::Keyword
++            }
++            else {
++                TokenKind::Ident
++            };
+             toks.push(Token {
+                 offset: start_offset,
+                 length: offset - start_offset,
+-                kind: TokenKind::Ident,
++                kind,
+             });
+           }
+           else {
+diff --git a/src/parser.rs b/src/parser.rs
+index 4da753f..9ed4422 100644
+--- a/src/parser.rs
++++ b/src/parser.rs
+@@ -32,7 +32,8 @@ pub enum ExprKind {
+ 
+ #[derive(Debug)]
+ pub enum StmtKind {
+-    Expr(ExprNode)
++    Expr(ExprNode),
++    Return(ExprNode)
+ }
+ 
+ #[derive(Debug)]
+@@ -68,7 +69,7 @@ impl<'a> Parser<'a> {
+         }
+     }
+ 
+-    // stmts = stmt+
++    // function = stmt+
+     pub fn function(&mut self) -> TopLevelNode {
+         let mut stmts = Vec::new();
+         while !self.is_done() {
+@@ -77,8 +78,15 @@ impl<'a> Parser<'a> {
+         TopLevelNode { kind: TopLevelKind::Function(self.vars.clone().into_iter().collect(), stmts) }
+     }
+ 
+-    // stmt = expr-stmt
++    // stmt = "return" expr ";"
++    //      | expr-stmt
+     fn stmt(&mut self) -> StmtNode {
++        if self.tok_is("return") {
++            self.advance();
++            let expr = self.expr();
++            self.skip(";");
++            return StmtNode { kind: StmtKind::Return(expr) }
++        }
+         self.expr_stmt()
+     }
+     
+diff --git a/test.sh b/test.sh
+index cfe9679..414537f 100755
+--- a/test.sh
++++ b/test.sh
+@@ -20,43 +20,48 @@ cargo build || exit
+ 
+ export RUST_BACKTRACE=1
+ 
+-assert 0 '0;'
+-assert 42 '42;'
+-assert 21 '5+20-4;'
+-assert 41 ' 12 + 34 - 5 ;'
+-assert 47 '5+6*7;'
+-assert 15 '5*(9-6);'
+-assert 4 '(3+5)/2;'
+-assert 10 '-10+20;'
+-assert 10 '- -10;'
+-assert 10 '- - +10;'
+-
+-assert 0 '0==1;'
+-assert 1 '42==42;'
+-assert 1 '0!=1;'
+-assert 0 '42!=42;'
+-
+-assert 1 '0<1;'
+-assert 0 '1<1;'
+-assert 0 '2<1;'
+-assert 1 '0<=1;'
+-assert 1 '1<=1;'
+-assert 0 '2<=1;'
+-
+-assert 1 '1>0;'
+-assert 0 '1>1;'
+-assert 0 '1>2;'
+-assert 1 '1>=0;'
+-assert 1 '1>=1;'
+-assert 0 '1>=2;'
+-
+-assert 3 '1; 2; 3;'
+-
+-assert 3 'a=3; a;'
+-assert 8 'a=3; z=5; a+z;'
+-assert 6 'a=b=3; a+b;'
+-assert 3 'foo=3; foo;'
+-assert 8 'foo123=3; bar=5; foo123+bar;'
++assert 0 'return 0;'
++assert 42 'return 42;'
++assert 21 'return 5+20-4;'
++assert 41 'return  12 + 34 - 5 ;'
++assert 47 'return 5+6*7;'
++assert 15 'return 5*(9-6);'
++assert 4 'return (3+5)/2;'
++assert 10 'return -10+20;'
++assert 10 'return - -10;'
++assert 10 'return - - +10;'
++
++assert 0 'return 0==1;'
++assert 1 'return 42==42;'
++assert 1 'return 0!=1;'
++assert 0 'return 42!=42;'
++
++assert 1 'return 0<1;'
++assert 0 'return 1<1;'
++assert 0 'return 2<1;'
++assert 1 'return 0<=1;'
++assert 1 'return 1<=1;'
++assert 0 'return 2<=1;'
++
++assert 1 'return 1>0;'
++assert 0 'return 1>1;'
++assert 0 'return 1>2;'
++assert 1 'return 1>=0;'
++assert 1 'return 1>=1;'
++assert 0 'return 1>=2;'
++
++assert 3 'a=3; return a;'
++assert 8 'a=3; z=5; return a+z;'
++
++assert 3 'a=3; return a;'
++assert 8 'a=3; z=5; return a+z;'
++assert 6 'a=b=3; return a+b;'
++assert 3 'foo=3; return foo;'
++assert 8 'foo123=3; bar=5; return foo123+bar;'
++
++assert 1 'return 1; 2; 3;'
++assert 2 '1; return 2; 3;'
++assert 3 '1; 2; return 3;'
+ 
+ rm -f tmp tmp.s
+ 

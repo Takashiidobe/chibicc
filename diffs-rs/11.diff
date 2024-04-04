@@ -1,0 +1,432 @@
+diff --git a/src/codegen.rs b/src/codegen.rs
+index d297248..e466225 100644
+--- a/src/codegen.rs
++++ b/src/codegen.rs
+@@ -81,6 +81,12 @@ impl<'a> Codegen<'a> {
+                 self.expr(expr);
+                 println!("  jmp .L.return");
+             },
++            StmtKind::Block(ref stmts) => {
++                for stmt in stmts {
++                    self.stmt(stmt)
++                }
++            },
++
+         }
+     }
+ 
+@@ -186,7 +192,7 @@ impl<'a> Codegen<'a> {
+             println!("  lea {}(%rbp), %rax", offset);
+             return;
+         }
+-        
++
+         panic!("not an lvalue: {:?}", expr);
+     }
+ 
+diff --git a/src/lexer.rs b/src/lexer.rs
+index b67da31..e1230ac 100644
+--- a/src/lexer.rs
++++ b/src/lexer.rs
+@@ -21,100 +21,101 @@ const KEYWORDS: [&[u8];1] = [
+ ];
+ 
+ pub struct Lexer<'a> {
+-  src: &'a [u8],
++    src: &'a [u8],
+ }
+ 
+ impl<'a> ErrorReporting for Lexer<'a> {
+-  fn src(&self) -> &[u8] { self.src }
++    fn src(&self) -> &[u8] { self.src }
+ }
+ 
+ impl<'a> Lexer<'a> {
+-  pub fn new(src: &'a [u8]) -> Self {
+-      Self { src }
+-  }
+-
+-  pub fn tokenize(&self) -> Vec<Token> {
+-      let mut toks = Vec::new();
+-      let mut offset = 0;
+-      let src = self.src;
+-  
+-      while offset < src.len() {
+-          let c = src[offset];
++    pub fn new(src: &'a [u8]) -> Self {
++        Self { src }
++    }
+   
+-          if c.is_ascii_whitespace() {
+-              offset += 1;
+-          }
+-          else if c.is_ascii_digit() {
+-              let (val, count) = read_int(&src[offset..]);
+-              if count == 0 {
+-                  self.error_at(offset, "expected number")
+-              }
+-              toks.push(Token {
+-                  offset,
+-                  length: count,
+-                  kind: TokenKind::Num(val),
+-              });
+-              offset += count;
+-          }
+-          else if is_ident_start(c) {
+-            let start_offset = offset;
+-            loop {
++    pub fn tokenize(&self) -> Vec<Token> {
++        let mut toks = Vec::new();
++        let mut offset = 0;
++        let src = self.src;
++    
++        while offset < src.len() {
++            let c = src[offset];
++    
++            if c.is_ascii_whitespace() {
+                 offset += 1;
+-                if !is_ident_cont(src[offset]) { break; }
+             }
+-            let name = &src[start_offset..offset];
+-            let kind = if KEYWORDS.contains(&name) {
+-                TokenKind::Keyword
++            else if c.is_ascii_digit() {
++                let (val, count) = read_int(&src[offset..]);
++                if count == 0 {
++                    self.error_at(offset, "expected number")
++                }
++                toks.push(Token {
++                    offset,
++                    length: count,
++                    kind: TokenKind::Num(val),
++                });
++                offset += count;
+             }
+-            else {
+-                TokenKind::Ident
+-            };
+-            toks.push(Token {
+-                offset: start_offset,
+-                length: offset - start_offset,
+-                kind,
+-            });
+-          }
+-          else {
+-              let punct_len = read_punct(&src[offset..]);
+-              if punct_len > 0 {
+-                  toks.push(Token {
+-                      offset,
+-                      length: punct_len,
+-                      kind: TokenKind::Punct,
+-                  });
+-                  offset += punct_len;
++            else if is_ident_start(c) {
++              let start_offset = offset;
++              loop {
++                  offset += 1;
++                  if !is_ident_cont(src[offset]) { break; }
+               }
+-              else {
+-                  self.error_at(offset, "invalid token");
++              let name = &src[start_offset..offset];
++              let kind = if KEYWORDS.contains(&name) {
++                  TokenKind::Keyword
+               }
+-          }
+-      }
+-  
+-      toks.push(Token { offset, length: 0, kind: TokenKind::Eof });
+-      toks
+-  }
++              else {
++                  TokenKind::Ident
++              };
++              toks.push(Token {
++                  offset: start_offset,
++                  length: offset - start_offset,
++                  kind,
++              });
++            }
++            else {
++                let punct_len = read_punct(&src[offset..]);
++                if punct_len > 0 {
++                    toks.push(Token {
++                        offset,
++                        length: punct_len,
++                        kind: TokenKind::Punct,
++                    });
++                    offset += punct_len;
++                }
++                else {
++                    self.error_at(offset, "invalid token");
++                }
++            }
++        }
++    
++        toks.push(Token { offset, length: 0, kind: TokenKind::Eof });
++        toks
++    }
+ }
+ 
+ fn read_int(buf: &[u8]) -> (i32, usize) {
+-  let mut acc: i32 = 0;
+-  let mut offset = 0;
+-  while offset < buf.len() {
+-      let b = buf[offset];
+-      if b.is_ascii_digit() {
+-          offset += 1;
+-          acc = acc * 10 + i32::from(b - b'0');
+-      }
+-      else {
+-          break;
+-      }
+-  }
+-  return (acc, offset);
++    let mut acc: i32 = 0;
++    let mut offset = 0;
++    while offset < buf.len() {
++        let b = buf[offset];
++        if b.is_ascii_digit() {
++            offset += 1;
++            acc = acc * 10 + i32::from(b - b'0');
++        }
++        else {
++            break;
++        }
++    }
++    return (acc, offset);
+ }
+ 
+ fn ispunct(c: u8) -> bool {
+-  return c == b';' || c == b'=' || c == b'+' || c == b'-' || c == b'*' || c == b'/' || 
+-      c == b'(' || c == b')' || c == b'<' || c == b'>';
++    return c == b';' || c == b'=' || c == b'{' || c == b'}' || 
++        c == b'+' || c == b'-' || c == b'*' || c == b'/' || 
++        c == b'(' || c == b')' || c == b'<' || c == b'>';
+ }
+ 
+ fn is_ident_start(c: u8) -> bool {
+@@ -125,18 +126,18 @@ fn is_ident_cont(c: u8) -> bool {
+ }
+ 
+ fn starts_with(src: &[u8], s: &str) -> bool {
+-  return src.starts_with(s.as_bytes());
++    return src.starts_with(s.as_bytes());
+ }
+ 
+ fn read_punct(src: &[u8]) -> usize {
+-  if starts_with(src, "==") || starts_with(src, "!=")
+-     || starts_with(src, "<=") || starts_with(src, ">=") {
+-      2
+-  }
+-  else if ispunct(src[0]) {
+-      1
+-  }
+-  else {
+-      0
+-  }
++    if starts_with(src, "==") || starts_with(src, "!=")
++       || starts_with(src, "<=") || starts_with(src, ">=") {
++        2
++    }
++    else if ispunct(src[0]) {
++        1
++    }
++    else {
++        0
++    }
+ }
+\ No newline at end of file
+diff --git a/src/parser.rs b/src/parser.rs
+index 9ed4422..1654014 100644
+--- a/src/parser.rs
++++ b/src/parser.rs
+@@ -33,7 +33,8 @@ pub enum ExprKind {
+ #[derive(Debug)]
+ pub enum StmtKind {
+     Expr(ExprNode),
+-    Return(ExprNode)
++    Return(ExprNode),
++    Block(Vec<StmtNode>)
+ }
+ 
+ #[derive(Debug)]
+@@ -79,6 +80,7 @@ impl<'a> Parser<'a> {
+     }
+ 
+     // stmt = "return" expr ";"
++    //      | "{" compound-stmt
+     //      | expr-stmt
+     fn stmt(&mut self) -> StmtNode {
+         if self.tok_is("return") {
+@@ -87,9 +89,24 @@ impl<'a> Parser<'a> {
+             self.skip(";");
+             return StmtNode { kind: StmtKind::Return(expr) }
+         }
++
++        if self.tok_is("{") {
++            self.advance();
++            return self.compound_stmt()
++        }
++
+         self.expr_stmt()
+     }
+-    
++
++    fn compound_stmt(&mut self) -> StmtNode {
++        let mut stmts = Vec::new();
++        while !self.tok_is("}") {
++            stmts.push(self.stmt());
++        }
++        self.advance();
++        StmtNode { kind: StmtKind::Block(stmts) }
++    }
++
+     // expr-stmt = expr ";"
+     fn expr_stmt(&mut self) -> StmtNode {
+         let expr = self.expr();
+@@ -117,7 +134,7 @@ impl<'a> Parser<'a> {
+     // equality = relational ("==" relational | "!=" relational)*
+     fn equality(&mut self) -> ExprNode {
+         let mut node = self.relational();
+-        
++
+         loop {
+             if self.tok_is("==") {
+                 self.advance();
+@@ -142,7 +159,7 @@ impl<'a> Parser<'a> {
+     // relational = add ("<" add | "<=" add | ">" add | ">=" add)*
+     fn relational(&mut self) -> ExprNode {
+         let mut node = self.add();
+-        
++
+         loop {
+             if self.tok_is("<") {
+                 self.advance();
+@@ -179,7 +196,7 @@ impl<'a> Parser<'a> {
+     // add = mul ("+" mul | "-" mul)*
+     fn add(&mut self) -> ExprNode {
+         let mut node = self.mul();
+-        
++
+         loop {
+             if self.tok_is("+") {
+                 self.advance();
+@@ -204,7 +221,7 @@ impl<'a> Parser<'a> {
+     // mul = unary ("*" unary | "/" unary)*
+     fn mul(&mut self) -> ExprNode {
+         let mut node = self.unary();
+-        
++
+         loop {
+             if self.tok_is("*") {
+                 self.advance();
+@@ -233,7 +250,7 @@ impl<'a> Parser<'a> {
+             self.advance();
+             return self.unary()
+         }
+-        
++
+         if self.tok_is("-") {
+             self.advance();
+             return ExprNode { kind: ExprKind::Neg(P::new(self.unary())) }
+@@ -256,7 +273,7 @@ impl<'a> Parser<'a> {
+                 self.advance();
+                 return node;
+             }
+-            TokenKind::Punct => 
++            TokenKind::Punct =>
+                 if self.tok_is("(") {
+                     self.advance();
+                     let node = self.expr();
+diff --git a/test.sh b/test.sh
+index 414537f..b3c7e27 100755
+--- a/test.sh
++++ b/test.sh
+@@ -20,48 +20,50 @@ cargo build || exit
+ 
+ export RUST_BACKTRACE=1
+ 
+-assert 0 'return 0;'
+-assert 42 'return 42;'
+-assert 21 'return 5+20-4;'
+-assert 41 'return  12 + 34 - 5 ;'
+-assert 47 'return 5+6*7;'
+-assert 15 'return 5*(9-6);'
+-assert 4 'return (3+5)/2;'
+-assert 10 'return -10+20;'
+-assert 10 'return - -10;'
+-assert 10 'return - - +10;'
++assert 0 '{ return 0; }'
++assert 42 '{ return 42; }'
++assert 21 '{ return 5+20-4; }'
++assert 41 '{ return  12 + 34 - 5 ; }'
++assert 47 '{ return 5+6*7; }'
++assert 15 '{ return 5*(9-6); }'
++assert 4 '{ return (3+5)/2; }'
++assert 10 '{ return -10+20; }'
++assert 10 '{ return - -10; }'
++assert 10 '{ return - - +10; }'
+ 
+-assert 0 'return 0==1;'
+-assert 1 'return 42==42;'
+-assert 1 'return 0!=1;'
+-assert 0 'return 42!=42;'
++assert 0 '{ return 0==1; }'
++assert 1 '{ return 42==42; }'
++assert 1 '{ return 0!=1; }'
++assert 0 '{ return 42!=42; }'
+ 
+-assert 1 'return 0<1;'
+-assert 0 'return 1<1;'
+-assert 0 'return 2<1;'
+-assert 1 'return 0<=1;'
+-assert 1 'return 1<=1;'
+-assert 0 'return 2<=1;'
++assert 1 '{ return 0<1; }'
++assert 0 '{ return 1<1; }'
++assert 0 '{ return 2<1; }'
++assert 1 '{ return 0<=1; }'
++assert 1 '{ return 1<=1; }'
++assert 0 '{ return 2<=1; }'
+ 
+-assert 1 'return 1>0;'
+-assert 0 'return 1>1;'
+-assert 0 'return 1>2;'
+-assert 1 'return 1>=0;'
+-assert 1 'return 1>=1;'
+-assert 0 'return 1>=2;'
++assert 1 '{ return 1>0; }'
++assert 0 '{ return 1>1; }'
++assert 0 '{ return 1>2; }'
++assert 1 '{ return 1>=0; }'
++assert 1 '{ return 1>=1; }'
++assert 0 '{ return 1>=2; }'
+ 
+-assert 3 'a=3; return a;'
+-assert 8 'a=3; z=5; return a+z;'
++assert 3 '{ a=3; return a; }'
++assert 8 '{ a=3; z=5; return a+z; }'
+ 
+-assert 3 'a=3; return a;'
+-assert 8 'a=3; z=5; return a+z;'
+-assert 6 'a=b=3; return a+b;'
+-assert 3 'foo=3; return foo;'
+-assert 8 'foo123=3; bar=5; return foo123+bar;'
++assert 3 '{ a=3; return a; }'
++assert 8 '{ a=3; z=5; return a+z; }'
++assert 6 '{ a=b=3; return a+b; }'
++assert 3 '{ foo=3; return foo; }'
++assert 8 '{ foo123=3; bar=5; return foo123+bar; }'
+ 
+-assert 1 'return 1; 2; 3;'
+-assert 2 '1; return 2; 3;'
+-assert 3 '1; 2; return 3;'
++assert 1 '{ return 1; 2; 3; }'
++assert 2 '{ 1; return 2; 3; }'
++assert 3 '{ 1; 2; return 3; }'
++
++assert 3 '{ {1; {2;} return 3;} }'
+ 
+ rm -f tmp tmp.s
+ 

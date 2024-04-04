@@ -1,0 +1,300 @@
+diff --git a/src/codegen.rs b/src/codegen.rs
+index 45562d0..9ef34c0 100644
+--- a/src/codegen.rs
++++ b/src/codegen.rs
+@@ -54,54 +54,69 @@ impl<'a> Codegen<'a> {
+     }
+ 
+     pub fn program(&mut self) {
++        self.data_sections();
++        self.text_section();
++    }
++
++    fn data_sections(&self) {
++        for binding in &self.su {
++            let binding = binding.borrow();
++            if let BindingKind::GlobalVar = binding.kind {
++                let name = String::from_utf8_lossy(&binding.name);
++                println!("  .data");
++                println!("  .globl {}", name);
++                println!("{}:", name);
++                println!("  .zero {}", binding.ty.size);
++            }
++        }
++    }
++
++    fn text_section(&mut self) {
+         // This still sucks... just less than before
+         for i in 0..self.su.len() {
+             let decl = self.su[i].clone();
+             let decl = decl.borrow();
+-            match decl.kind {
+-                BindingKind::Function(Function {
+-                    ref params,
+-                    ref locals,
+-                    ref body,
+-                    stack_size
+-                }) => {
+-                    let name = String::from_utf8_lossy(&decl.name);
+-                    let ret_lbl = format!(".L.return.{}", name);
+-                    self.cur_ret_lbl = Some(ret_lbl);
++            if let BindingKind::Function(Function {
++                ref params,
++                ref locals,
++                ref body,
++                stack_size
++            }) = decl.kind {
++                let name = String::from_utf8_lossy(&decl.name);
++                let ret_lbl = format!(".L.return.{}", name);
++                self.cur_ret_lbl = Some(ret_lbl);
+ 
+-                    println!();
+-                    println!("  .globl {}", name);
+-                    for local in locals {
+-                        let local = local.borrow();
+-                        if let BindingKind::LocalVar { stack_offset } = local.kind {
+-                            println!("# var {} offset {}", String::from_utf8_lossy(&local.name), stack_offset);
+-                        }
++                println!();
++                println!("  .globl {}", name);
++                for local in locals {
++                    let local = local.borrow();
++                    if let BindingKind::LocalVar { stack_offset } = local.kind {
++                        println!("# var {} offset {}", String::from_utf8_lossy(&local.name), stack_offset);
+                     }
+-                    println!("{}:", name);
++                }
++                println!("{}:", name);
+ 
+-                    // Prologue
+-                    println!("  push %rbp");
+-                    println!("  mov %rsp, %rbp");
+-                    println!("  sub ${}, %rsp", stack_size);
+-                    println!();
++                // Prologue
++                println!("  push %rbp");
++                println!("  mov %rsp, %rbp");
++                println!("  sub ${}, %rsp", stack_size);
++                println!();
+ 
+-                    for (i, param) in params.iter().enumerate() {
+-                        if let BindingKind::LocalVar { stack_offset } = param.borrow().kind {
+-                            println!("  mov {}, {}(%rbp)", ARG_REGS[i], stack_offset);
+-                        }
++                for (i, param) in params.iter().enumerate() {
++                    if let BindingKind::LocalVar { stack_offset } = param.borrow().kind {
++                        println!("  mov {}, {}(%rbp)", ARG_REGS[i], stack_offset);
+                     }
++                }
+ 
+-                    self.stmt(&body);
+-                    self.sanity_checks();
++                self.stmt(&body);
++                self.sanity_checks();
+ 
+-                    println!();
+-                    println!("{}:", self.cur_ret_lbl.as_ref().unwrap());
+-                    println!("  mov %rbp, %rsp");
+-                    println!("  pop %rbp");
+-                    println!("  ret");
+-                    println!();
+-                }
+-                _ => panic!("Unsupported")
++                println!();
++                println!("{}:", self.cur_ret_lbl.as_ref().unwrap());
++                println!("  mov %rbp, %rsp");
++                println!("  pop %rbp");
++                println!("  ret");
++                println!();
+             };
+         }
+     }
+@@ -282,11 +297,15 @@ impl<'a> Codegen<'a> {
+     fn addr(&mut self, expr: &ExprNode) {
+         match &expr.kind {
+             ExprKind::Var(data) => {
+-                if let BindingKind::LocalVar { stack_offset } = data.borrow().kind {
+-                    println!("  lea {}(%rbp), %rax", stack_offset);
+-                }
+-                else {
+-                    panic!("Unsupported");
++                let data = data.borrow();
++                match data.kind {
++                    BindingKind::LocalVar { stack_offset } => {
++                        println!("  lea {}(%rbp), %rax", stack_offset);
++                    }
++                    BindingKind::GlobalVar => {
++                        println!("  lea {}(%rip), %rax", String::from_utf8_lossy(&data.name));
++                    }
++                    _ => panic!("Unsupported")
+                 }
+             },
+             ExprKind::Deref(expr) => {
+diff --git a/src/parser.rs b/src/parser.rs
+index 2145c39..dbd8ba4 100644
+--- a/src/parser.rs
++++ b/src/parser.rs
+@@ -105,7 +105,8 @@ pub struct Parser<'a> {
+     src: &'a [u8],
+     toks: &'a [Token],
+     tok_index: usize,
+-    vars: Vec<SP<Binding>>,
++    local_vars: Vec<SP<Binding>>,
++    global_vars: Vec<SP<Binding>>,
+ }
+ 
+ impl<'a> ErrorReporting for Parser<'a> {
+@@ -121,34 +122,76 @@ impl<'a> Parser<'a> {
+             src,
+             toks,
+             tok_index: 0,
+-            vars: Vec::new()
++            local_vars: Vec::new(),
++            global_vars: Vec::new()
+         }
+     }
+ 
+     // source_unit = stmt+
+     pub fn source_unit(&mut self) -> SourceUnit {
+-        let mut fns = Vec::new();
++        let mut su = Vec::new();
+         loop {
+             match self.peek().kind {
+                 TokenKind::Eof => break,
+-                _ => fns.push(Rc::new(RefCell::new(self.function()))),
++                _ => {
++                    if self.is_function() {
++                        su.push(Rc::new(RefCell::new(self.function())))
++                    }
++                    else {
++                        self.global_vars(&mut su);
++                    }
++                },
+             }
+         }
+-        fns
++        su
+     }
+ 
+-    pub fn function(&mut self) -> Binding {
+-        self.vars.clear();
++    fn global_vars(&mut self, bindings: &mut Vec<SP<Binding>>) {
++        let base_ty = self.declspec();
++
++        let mut first = true;
++        while !self.peek_is(";") {
++            if !first {
++                self.skip(",");
++            }
++            first = false;
++
++            let offset = self.peek().offset;
++            let (ty, name) = self.declarator(base_ty.clone());
++            let gvar = Binding { kind: BindingKind::GlobalVar, name, ty, offset };
++            let binding = Rc::new(RefCell::new(gvar));
++            self.global_vars.push(binding.clone());
++            bindings.push(binding);
++        }
++        self.skip(";");
++    }
++
++    fn is_function(&mut self) -> bool {
++        if self.peek_is(";") {
++            return false;
++        }
++
++        let idx = self.tok_index;
++        let base_ty = self.declspec();
++        let (ty, _) = self.declarator(base_ty);
++
++        self.tok_index = idx;
++        self.local_vars.clear();
++        matches!(ty.kind, TyKind::Fn(_, _))
++    }
++
++    fn function(&mut self) -> Binding {
++        self.local_vars.clear();
+ 
+         let offset = self.peek().offset;
+-        let ty = self.declspec();
+-        let (ty, name) = self.declarator(ty);
++        let base_ty = self.declspec();
++        let (ty, name) = self.declarator(base_ty);
+ 
+-        let params = self.vars.clone();
++        let params = self.local_vars.clone();
+ 
+         let body = self.compound_stmt();
+         // Reverse them to keep the locals layout in line with chibicc
+-        let locals: Vec<SP<Binding>> = self.vars.clone().into_iter().rev().collect();
++        let locals: Vec<SP<Binding>> = self.local_vars.clone().into_iter().rev().collect();
+         Binding {
+             kind: BindingKind::Function(Function {
+                 params,
+@@ -263,7 +306,7 @@ impl<'a> Parser<'a> {
+                 ty: ty.clone(),
+                 offset
+             }));
+-            self.vars.push(var_data.clone());
++            self.local_vars.push(var_data.clone());
+ 
+             if !self.peek_is("=") {
+                 continue;
+@@ -308,7 +351,7 @@ impl<'a> Parser<'a> {
+             _ => self.error_tok(self.peek(), "expected a variable name")
+         };
+ 
+-        println!("# DECL {}: {:?}", String::from_utf8_lossy(&decl.1), decl.0);
++        //println!("# DECL {}: {:?}", String::from_utf8_lossy(&decl.1), decl.0);
+         decl
+     }
+ 
+@@ -343,7 +386,7 @@ impl<'a> Parser<'a> {
+             let base_ty = self.declspec();
+             let (ty, name) = self.declarator(base_ty);
+             params.push(ty.clone());
+-            self.vars.push(
++            self.local_vars.push(
+                 Rc::new(RefCell::new(Binding {
+                     kind: BindingKind::LocalVar { stack_offset: -1 },
+                     name,
+@@ -636,7 +679,15 @@ impl<'a> Parser<'a> {
+                 let name = self.tok_source(tok).to_owned();
+                 self.advance();
+ 
+-                let var_data = self.vars.iter().find(|v| v.borrow().name == name);
++                let mut var_data = self.local_vars.iter().find(|v|
++                    v.borrow().name == name
++                );
++                if let None = var_data {
++                    var_data = self.global_vars.iter().find(|v|
++                        v.borrow().name == name
++                    );
++                }
++
+                 if let Some(var_data) = var_data {
+                     let ty = var_data.borrow_mut().ty.clone();
+                     let expr = ExprNode { kind: ExprKind::Var(var_data.clone()), offset, ty };
+diff --git a/test.sh b/test.sh
+index 0efde7c..0950cc1 100755
+--- a/test.sh
++++ b/test.sh
+@@ -155,6 +155,18 @@ assert 8 'int main() { int x[3][4]; return sizeof(**x + 1); }'
+ assert 8 'int main() { int x=1; return sizeof(x=2); }'
+ assert 1 'int main() { int x=1; sizeof(x=2); return x; }'
+ 
++assert 0 'int x; int main() { return x; }'
++assert 3 'int x; int main() { x=3; return x; }'
++assert 7 'int x; int y; int main() { x=3; y=4; return x+y; }'
++assert 7 'int x, y; int main() { x=3; y=4; return x+y; }'
++assert 0 'int x[4]; int main() { x[0]=0; x[1]=1; x[2]=2; x[3]=3; return x[0]; }'
++assert 1 'int x[4]; int main() { x[0]=0; x[1]=1; x[2]=2; x[3]=3; return x[1]; }'
++assert 2 'int x[4]; int main() { x[0]=0; x[1]=1; x[2]=2; x[3]=3; return x[2]; }'
++assert 3 'int x[4]; int main() { x[0]=0; x[1]=1; x[2]=2; x[3]=3; return x[3]; }'
++
++assert 8 'int x; int main() { return sizeof(x); }'
++assert 32 'int x[4]; int main() { return sizeof(x); }'
++
+ rm -f tmp tmp2.o tmp.s
+ 
+ echo OK

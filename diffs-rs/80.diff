@@ -1,0 +1,204 @@
+diff --git a/src/codegen.rs b/src/codegen.rs
+index c2b0365..875d3cd 100644
+--- a/src/codegen.rs
++++ b/src/codegen.rs
+@@ -345,13 +345,36 @@ impl<'a> Codegen<'a> {
+             },
+             ExprKind::Cast(expr) => {
+                 self.expr(expr);
+-                if let Some(instr) = cast_instr(&expr.ty, &node.ty) {
+-                    wln!(self, "  {}", instr);
++
++                let from = &expr.ty;
++                let to = &node.ty;
++
++                match to.kind {
++                    TyKind::Unit => {},
++                    TyKind::Bool => {
++                        self.cmp_zero(from);
++                        wln!(self, "  setne %al");
++                        wln!(self, "  movzx %al, %eax");
++                    }
++                    _ => {
++                        let from_index = to_cast_type(from) as usize;
++                        let to_index = to_cast_type(to) as usize;
++                        CAST_TABLE[from_index][to_index].map(|instr| wln!(self, "  {}", instr));
++                    }
+                 }
+             }
+         };
+     }
+ 
++    fn cmp_zero(&mut self, ty: &Ty) {
++        if ty.is_integer_like() && ty.size <= 4 {
++            wln!(self, "  cmp $0, %eax");
++        }
++        else {
++            wln!(self, "  cmp $0, %rax");
++        }
++    }
++
+     fn load(&mut self, ty: &Ty) {
+         match ty.kind {
+             TyKind::Array(_, _) | TyKind::Struct(_) | TyKind::Union(_) =>
+@@ -515,17 +538,6 @@ fn to_cast_type(ty: &Ty) -> CastType {
+     }
+ }
+ 
+-fn cast_instr(from: &Ty, to: &Ty) -> Option<&'static str> {
+-    match to.kind {
+-        TyKind::Unit => None,
+-        _ => {
+-            let from_index = to_cast_type(from) as usize;
+-            let to_index = to_cast_type(to) as usize;
+-            CAST_TABLE[from_index][to_index]
+-        }
+-    }
+-}
+-
+ // Alignment
+ 
+ pub trait Alignable : Display + Copy + Add<Output=Self> + Sub<Output=Self> + Div<Output=Self> + Mul<Output=Self> {
+diff --git a/src/lexer.rs b/src/lexer.rs
+index 05046d7..48d9e05 100644
+--- a/src/lexer.rs
++++ b/src/lexer.rs
+@@ -28,7 +28,7 @@ pub struct Token {
+ 
+ lazy_static! {
+     pub static ref TY_KEYWORDS: HashSet<&'static [u8]> = [
+-        "void", "char", "short", "int", "long", "struct", "union"
++        "void", "_Bool", "char", "short", "int", "long", "struct", "union"
+     ].map(|k| k.as_bytes()).into();
+ 
+     static ref KEYWORDS: HashSet<&'static [u8]> = {
+diff --git a/src/parser.rs b/src/parser.rs
+index 3d07092..ec9ef23 100644
+--- a/src/parser.rs
++++ b/src/parser.rs
+@@ -9,6 +9,7 @@ pub type SP<A> = Rc<RefCell<A>>;
+ 
+ #[derive(Debug)]
+ pub enum TyKind {
++    Bool,
+     Char,
+     Short,
+     Int,
+@@ -36,6 +37,7 @@ pub struct Ty {
+ }
+ 
+ impl Ty {
++    fn bool() -> Rc<Ty> { Rc::new(Ty { kind: TyKind::Bool, size: 1, align: 1 }) }
+     fn char() -> Rc<Ty> { Rc::new(Ty { kind: TyKind::Char, size: 1, align: 1 }) }
+     fn short() -> Rc<Ty> { Rc::new(Ty { kind: TyKind::Short, size: 2, align: 2 }) }
+     fn int() -> Rc<Ty> { Rc::new(Ty { kind: TyKind::Int, size: 4, align: 4 }) }
+@@ -71,9 +73,9 @@ impl Ty {
+         Rc::new(Ty { kind: TyKind::Union(members.into_iter().map(|m| Rc::new(m)).collect()), size, align })
+     }
+ 
+-    fn is_integer_like(&self) -> bool {
++    pub fn is_integer_like(&self) -> bool {
+         match &self.kind {
+-            TyKind::Char | TyKind::Short | TyKind::Int | TyKind::Long => true,
++            TyKind::Bool | TyKind::Char | TyKind::Short | TyKind::Int | TyKind::Long => true,
+             _ => false,
+         }
+     }
+@@ -92,7 +94,7 @@ impl Ty {
+         }
+     }
+ 
+-    fn is_tagged(&self) -> bool {
++    fn is_tag_like(&self) -> bool {
+         match &self.kind {
+             TyKind::Struct(_) | TyKind::Union(_) => true,
+             _ => false,
+@@ -545,20 +547,15 @@ impl<'a> Parser<'a> {
+             self.advance();
+             let lhs = ExprNode { kind: ExprKind::Var(Rc::downgrade(&var_data)), loc, ty };
+             let rhs = self.assign();
+-            let rhs_ty = rhs.ty.clone();
+             stmts.push(StmtNode {
+-                kind: StmtKind::Expr(ExprNode {
+-                    kind: ExprKind::Assign(P::new(lhs), P::new(rhs)),
+-                    loc,
+-                    ty: rhs_ty,
+-                }),
++                kind: StmtKind::Expr(self.synth_assign(P::new(lhs), P::new(rhs), loc)),
+                 loc,
+                 ty: Ty::unit()
+             });
+         }
+     }
+ 
+-    // declspec = struct-decl | union-decl | "void" | "char" | ("short" | "int" | "long")+
++    // declspec = struct-decl | union-decl | "void" | "_Bool" | "char" | ("short" | "int" | "long")+
+     //
+     // The order of typenames in a type-specifier doesn't matter. For
+     // example, `int long static` means the same as `static long int`.
+@@ -579,6 +576,10 @@ impl<'a> Parser<'a> {
+             self.advance();
+             return Ty::unit();
+         }
++        if self.peek_is("_Bool") {
++            self.advance();
++            return Ty::bool();
++        }
+         if self.peek_is("char") {
+             self.advance();
+             return Ty::char();
+@@ -1277,7 +1278,7 @@ impl<'a> Parser<'a> {
+ 
+             let arg = if args.len() < param_tys.len() {
+                 let param_ty = &param_tys[args.len()];
+-                if param_ty.is_tagged() {
++                if param_ty.is_tag_like() {
+                     self.ctx.error_at(&loc, "passing structs or unions is unsupported");
+                 }
+                 P::new(synth_cast(arg,  param_ty.clone()))
+diff --git a/test/decl.c b/test/decl.c
+index 8536ca9..a8fd0dd 100644
+--- a/test/decl.c
++++ b/test/decl.c
+@@ -10,6 +10,13 @@ int main() {
+ 
+   ASSERT(8, ({ long long x; sizeof(x); }));
+ 
++  ASSERT(0, ({ _Bool x=0; x; }));
++  ASSERT(1, ({ _Bool x=1; x; }));
++  ASSERT(1, ({ _Bool x=2; x; }));
++  ASSERT(1, (_Bool)1);
++  ASSERT(1, (_Bool)2);
++  ASSERT(0, (_Bool)(char)256);
++
+   printf("OK\n");
+   return 0;
+ }
+diff --git a/test/function.c b/test/function.c
+index 7bca794..b86e243 100644
+--- a/test/function.c
++++ b/test/function.c
+@@ -48,6 +48,9 @@ int div_long(long a, long b) {
+   return a / b;
+ }
+ 
++_Bool bool_fn_add(_Bool x) { return x + 1; }
++_Bool bool_fn_sub(_Bool x) { return x - 1; }
++
+ int main() {
+   ASSERT(3, ret3());
+   ASSERT(8, add2(3, 5));
+@@ -71,6 +74,13 @@ int main() {
+   ASSERT(5, int_to_char(261));
+   ASSERT(-5, div_long(-10, 2));
+ 
++  ASSERT(1, bool_fn_add(3));
++  ASSERT(0, bool_fn_sub(3));
++  ASSERT(1, bool_fn_add(-3));
++  ASSERT(0, bool_fn_sub(-3));
++  ASSERT(1, bool_fn_add(0));
++  ASSERT(1, bool_fn_sub(0));
++
+   printf("OK\n");
+   return 0;
+ }

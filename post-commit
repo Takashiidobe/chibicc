@@ -1,0 +1,14 @@
+#!/usr/bin/sh
+#
+# An example hook script to prepare a packed repository for use over
+# dumb transports.
+#
+# To enable this hook, rename this file to "post-update".
+
+tag_name="$(git log --pretty=oneline --pretty=format:%h -1)"
+
+git tag "$tag_name"
+#
+# ntl deploy --prod
+
+exit 0

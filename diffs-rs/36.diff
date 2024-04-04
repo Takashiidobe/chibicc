@@ -1,0 +1,274 @@
+diff --git a/src/codegen.rs b/src/codegen.rs
+index 9ef34c0..cca4e19 100644
+--- a/src/codegen.rs
++++ b/src/codegen.rs
+@@ -1,7 +1,10 @@
+ use crate::errors::ErrorReporting;
+ use crate::parser::{Binding, BindingKind, Function, StmtNode, StmtKind, ExprNode, ExprKind, SourceUnit, TyKind, Ty};
+ 
+-const ARG_REGS: [&str;6] = [
++const ARG_REGS8: [&str;6] = [
++    "%dil", "%sil", "%dl", "%cl", "%r8b", "%r9b"
++];
++const ARG_REGS64: [&str;6] = [
+     "%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"
+ ];
+ 
+@@ -103,8 +106,14 @@ impl<'a> Codegen<'a> {
+                 println!();
+ 
+                 for (i, param) in params.iter().enumerate() {
+-                    if let BindingKind::LocalVar { stack_offset } = param.borrow().kind {
+-                        println!("  mov {}, {}(%rbp)", ARG_REGS[i], stack_offset);
++                    let param = param.borrow();
++                    if let BindingKind::LocalVar { stack_offset } = param.kind {
++                        if param.ty.size == 1 {
++                            println!("  mov {}, {}(%rbp)", ARG_REGS8[i], stack_offset);
++                        }
++                        else {
++                            println!("  mov {}, {}(%rbp)", ARG_REGS64[i], stack_offset);
++                        }
+                     }
+                 }
+ 
+@@ -185,7 +194,7 @@ impl<'a> Codegen<'a> {
+                     self.push();
+                 }
+                 for i in (0..args.len()).rev() {
+-                    self.pop(ARG_REGS[i]);
++                    self.pop(ARG_REGS64[i]);
+                 }
+                 println!("  mov $0, %rax");
+                 println!("  call {}", String::from_utf8_lossy(name));
+@@ -201,7 +210,7 @@ impl<'a> Codegen<'a> {
+                 self.addr(lhs);
+                 self.push();
+                 self.expr(rhs);
+-                self.store();
++                self.store(&node.ty);
+             }
+             ExprKind::Add(lhs, rhs) => {
+                 self.expr(rhs.as_ref());
+@@ -276,12 +285,24 @@ impl<'a> Codegen<'a> {
+         if let TyKind::Array(_, _) = ty.kind {
+             return;
+         }
+-        println!("  mov (%rax), %rax");
++
++        if ty.size == 1 {
++            println!("  movsbq (%rax), %rax");
++        }
++        else {
++            println!("  mov (%rax), %rax");
++        }
+     }
+ 
+-    fn store(&mut self) {
++    fn store(&mut self, ty: &Ty) {
+         self.pop("%rdi");
+-        println!("  mov %rax, (%rdi)");
++
++        if ty.size == 1 {
++            println!("  mov %al, (%rdi)");
++        }
++        else {
++            println!("  mov %rax, (%rdi)");
++        }
+     }
+ 
+     fn push(&mut self) {
+diff --git a/src/lexer.rs b/src/lexer.rs
+index bd4b41a..867da89 100644
+--- a/src/lexer.rs
++++ b/src/lexer.rs
+@@ -25,7 +25,7 @@ lazy_static! {
+             "if", "else",
+             "for", "while",
+             "sizeof",
+-            "int"
++            "int", "char"
+         ].map(|k| k.as_bytes()).into()
+     };
+ }
+diff --git a/src/parser.rs b/src/parser.rs
+index dbd8ba4..1259ec0 100644
+--- a/src/parser.rs
++++ b/src/parser.rs
+@@ -11,6 +11,7 @@ pub type AsciiStr = Vec<u8>;
+ #[derive(Debug)]
+ pub enum TyKind {
+     Int,
++    Char,
+     Ptr(Rc<Ty>),
+     Fn(Rc<Ty>, Vec<Rc<Ty>>),
+     Array(Rc<Ty>, usize),
+@@ -25,6 +26,7 @@ pub struct Ty {
+ 
+ impl Ty {
+     fn int() -> Rc<Ty> { Rc::new(Ty { kind: TyKind::Int, size: 8 }) }
++    fn char() -> Rc<Ty> { Rc::new(Ty { kind: TyKind::Char, size: 1 }) }
+     fn unit() -> Rc<Ty> { Rc::new(Ty { kind: TyKind::Unit, size: 0 }) }
+     fn ptr(base: Rc<Ty>) -> Rc<Ty> { Rc::new(Ty { kind: TyKind::Ptr(base), size: 8 }) }
+     fn func(ret: Rc<Ty>, params: Vec<Rc<Ty>>) -> Rc<Ty> { Rc::new(Ty { kind: TyKind::Fn(ret, params), size: 0 }) }
+@@ -32,6 +34,27 @@ impl Ty {
+         let base_size = base.size;
+         Rc::new(Ty { kind: TyKind::Array(base, len), size: base_size*len })
+     }
++
++    fn is_integer_like(&self) -> bool {
++        match &self.kind {
++            TyKind::Int | TyKind::Char => true,
++            _ => false,
++        }
++    }
++
++    fn is_pointer_like(&self) -> bool {
++        match &self.kind {
++            TyKind::Ptr(_) | TyKind::Array(_, _) => true,
++            _ => false
++        }
++    }
++
++    fn base_ty(&self) -> Option<&Ty> {
++        match &self.kind {
++            TyKind::Ptr(base_ty) | TyKind::Array(base_ty, _) => Some(base_ty),
++            _ => None
++        }
++    }
+ }
+ 
+ #[derive(Debug)]
+@@ -276,7 +299,7 @@ impl<'a> Parser<'a> {
+         let offset = self.skip("{").offset;
+         let mut stmts = Vec::new();
+         while !self.peek_is("}") {
+-            if self.peek_is("int") {
++            if self.peek_is_ty_name() {
+                 self.declaration(&mut stmts);
+             }
+             else {
+@@ -287,6 +310,10 @@ impl<'a> Parser<'a> {
+         StmtNode { kind: StmtKind::Block(stmts), offset, ty: Ty::unit() }
+     }
+ 
++    fn peek_is_ty_name(&self) -> bool {
++        self.peek_is("char") || self.peek_is("int")
++    }
++
+     // declaration = declspec (declarator ("=" expr)? ("," declarator ("=" expr)?)*)? ";"
+     fn  declaration(&mut self, stmts: &mut Vec<StmtNode>) {
+         let base_ty = self.declspec();
+@@ -328,8 +355,13 @@ impl<'a> Parser<'a> {
+         }
+     }
+ 
+-    // declspec = "int"
++    // declspec = "int" | "char"
+     fn declspec(&mut self) -> Rc<Ty> {
++        if self.peek_is("char") {
++            self.advance();
++            return Ty::char()
++        }
++
+         self.skip("int");
+         Ty::int()
+     }
+@@ -534,47 +566,49 @@ impl<'a> Parser<'a> {
+         let mut lhs = lhs;
+         let mut rhs = rhs;
+ 
+-        if let TyKind::Int = lhs.ty.kind {
+-            if let TyKind::Ptr(_) | TyKind::Array(_, _) = rhs.ty.kind {
++        if lhs.ty.is_integer_like() {
++            if rhs.ty.is_pointer_like() {
+                 let tmp = lhs;
+                 lhs = rhs;
+                 rhs = tmp;
+             }
+         }
+ 
+-        match (&lhs.ty.kind, &rhs.ty.kind) {
+-            (TyKind::Int, TyKind::Int) => {
+-                synth_add(lhs, rhs, offset)
+-            },
+-            (TyKind::Ptr(bt), TyKind::Int) | (TyKind::Array(bt, _), TyKind::Int) => {
+-                let size = P::new(synth_num(bt.size.try_into().unwrap(), offset));
+-                let rhs = synth_mul(size, rhs, offset);
+-                synth_add(lhs, P::new(rhs), offset)
+-            },
+-            _ => self.error_at(offset, "invalid operands")
++        if lhs.ty.is_integer_like() && rhs.ty.is_integer_like() {
++            return synth_add(lhs, rhs, offset);
+         }
++
++        if lhs.ty.is_pointer_like() && rhs.ty.is_integer_like() {
++            let base_ty = lhs.ty.base_ty().unwrap();
++            let size = P::new(synth_num(base_ty.size.try_into().unwrap(), offset));
++            let rhs = synth_mul(size, rhs, offset);
++            return synth_add(lhs, P::new(rhs), offset)
++        }
++
++        self.error_at(offset, "invalid operands");
+     }
+ 
+     fn sub_overload(&self, lhs: P<ExprNode>, rhs: P<ExprNode>, offset: usize) -> ExprNode {
+-        match (&lhs.ty.kind, &rhs.ty.kind) {
+-            (TyKind::Int, TyKind::Int) => {
+-                synth_sub(lhs, rhs, offset)
+-            },
+-            (TyKind::Ptr(bt), TyKind::Int) | (TyKind::Array(bt, _), TyKind::Int) => {
+-                let size = P::new(synth_num(bt.size.try_into().unwrap(), offset));
+-                let rhs = synth_mul(size, rhs, offset);
+-                synth_sub(lhs, P::new(rhs), offset)
+-            },
+-            // TODO better way than combinatorial explosion?
+-            (TyKind::Ptr(bt), TyKind::Ptr(_)) | (TyKind::Array(bt, _), TyKind::Ptr(_)) |
+-            (TyKind::Ptr(bt), TyKind::Array(_, _)) | (TyKind::Array(bt, _), TyKind::Array(_,_)) => {
+-                let size: i64 = bt.size.try_into().unwrap();
+-                let mut sub = synth_sub(lhs, rhs, offset);
+-                sub.ty = Ty::int();
+-                synth_div(P::new(sub), P::new(synth_num(size, offset)), offset)
+-            }
+-            _ => self.error_at(offset, "invalid operands")
++        if lhs.ty.is_integer_like() && rhs.ty.is_integer_like() {
++            return synth_sub(lhs, rhs, offset);
++        }
++
++        if lhs.ty.is_pointer_like() && rhs.ty.is_integer_like() {
++            let base_ty = lhs.ty.base_ty().unwrap();
++            let size = P::new(synth_num(base_ty.size.try_into().unwrap(), offset));
++            let rhs = synth_mul(size, rhs, offset);
++            return synth_sub(lhs, P::new(rhs), offset);
+         }
++
++        if lhs.ty.is_pointer_like() && rhs.ty.is_pointer_like() {
++            let base_ty = lhs.ty.base_ty().unwrap();
++            let size: i64 = base_ty.size.try_into().unwrap();
++            let mut sub = synth_sub(lhs, rhs, offset);
++            sub.ty = Ty::int();
++            return synth_div(P::new(sub), P::new(synth_num(size, offset)), offset);
++        }
++
++        self.error_at(offset, "invalid operands");
+     }
+ 
+     // mul = unary ("*" unary | "/" unary)*
+diff --git a/test.sh b/test.sh
+index 0950cc1..26bc32b 100755
+--- a/test.sh
++++ b/test.sh
+@@ -167,6 +167,14 @@ assert 3 'int x[4]; int main() { x[0]=0; x[1]=1; x[2]=2; x[3]=3; return x[3]; }'
+ assert 8 'int x; int main() { return sizeof(x); }'
+ assert 32 'int x[4]; int main() { return sizeof(x); }'
+ 
++assert 1 'int main() { char x=1; return x; }'
++assert 1 'int main() { char x=1; char y=2; return x; }'
++assert 2 'int main() { char x=1; char y=2; return y; }'
++
++assert 1 'int main() { char x; return sizeof(x); }'
++assert 10 'int main() { char x[10]; return sizeof(x); }'
++assert 1 'int main() { return sub_char(7, 3, 3); } int sub_char(char a, char b, char c) { return a-b-c; }'
++
+ rm -f tmp tmp2.o tmp.s
+ 
+ echo OK

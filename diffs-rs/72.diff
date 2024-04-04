@@ -1,0 +1,41 @@
+diff --git a/src/codegen.rs b/src/codegen.rs
+index fc92cd5..808aaba 100644
+--- a/src/codegen.rs
++++ b/src/codegen.rs
+@@ -436,7 +436,7 @@ impl<'a> Codegen<'a> {
+             },
+             ExprKind::MemberAccess(expr, member) => {
+                 self.addr(expr);
+-                wln!(self, "  add ${}, %rax", member.offset);
++                wln!(self, "  add ${}, %rax", member.upgrade().unwrap().offset);
+             }
+             _ => self.ctx.error_at(&expr.loc, "not an lvalue")
+         };
+diff --git a/src/parser.rs b/src/parser.rs
+index d7ea5f6..bc84355 100644
+--- a/src/parser.rs
++++ b/src/parser.rs
+@@ -1,4 +1,4 @@
+-use std::cell::RefCell;
++use std::{cell::RefCell, rc::Weak};
+ 
+ use std::rc::Rc;
+ 
+@@ -146,7 +146,7 @@ pub enum ExprKind {
+     Lt(P<ExprNode>, P<ExprNode>),
+     Le(P<ExprNode>, P<ExprNode>),
+ 
+-    MemberAccess(P<ExprNode>, Rc<Member>),
++    MemberAccess(P<ExprNode>, Weak<Member>),
+ 
+     Comma(Vec<P<ExprNode>>),
+     StmtExpr(P<StmtNode>),
+@@ -1090,7 +1090,7 @@ impl<'a> Parser<'a> {
+ 
+         let ty = member.ty.clone();
+         ExprNode {
+-            kind: ExprKind::MemberAccess(Box::new(struct_node), member),
++            kind: ExprKind::MemberAccess(Box::new(struct_node), Rc::downgrade(&member)),
+             loc,
+             ty,
+         }

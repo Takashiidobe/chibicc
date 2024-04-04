@@ -1,0 +1,80 @@
+diff --git a/src/parser.rs b/src/parser.rs
+index 3e3c779..3163d12 100644
+--- a/src/parser.rs
++++ b/src/parser.rs
+@@ -236,7 +236,10 @@ pub struct Parser<'a> {
+     next_unique_id: u64,
+ 
+     // Speculation
+-    checkpoint_stack: Vec<ParserCheckpoint>
++    checkpoint_stack: Vec<ParserCheckpoint>,
++
++    // Unsaved state
++    cur_fn_ty: Rc<Ty>
+ }
+ 
+ impl<'a> Parser<'a> {
+@@ -262,6 +265,9 @@ impl<'a> Parser<'a> {
+ 
+             // Speculation
+             checkpoint_stack: Vec::new(),
++
++            // Unsaved state
++            cur_fn_ty: Ty::unit()
+         }
+     }
+ 
+@@ -325,6 +331,8 @@ impl<'a> Parser<'a> {
+         let base_ty = self.declspec();
+         let (ty, name) = self.declarator(base_ty);
+ 
++        self.cur_fn_ty = ty.clone();
++
+         let params = self.cur_fn_local_bindings.clone();
+ 
+         if self.peek_is(";") {
+@@ -377,7 +385,15 @@ impl<'a> Parser<'a> {
+             let loc = self.advance().loc;
+             let expr = self.expr();
+             self.skip(";");
+-            return StmtNode { kind: StmtKind::Return(expr), loc, ty: Ty::unit() }
++            let ret_ty = match &self.cur_fn_ty.kind {
++                TyKind::Fn(ret_ty, _) => ret_ty,
++                _ => panic!("cur_fn_ty is not of kind Fn")
++            };
++            return StmtNode {
++                kind: StmtKind::Return(synth_cast(P::new(expr), ret_ty.clone())),
++                loc,
++                ty: Ty::unit()
++            }
+         }
+ 
+         if self.peek_is("if") {
+diff --git a/test/function.c b/test/function.c
+index ece913a..f06301b 100644
+--- a/test/function.c
++++ b/test/function.c
+@@ -39,6 +39,11 @@ int sub_short(short a, short b, short c) {
+   return a - b - c;
+ }
+ 
++int g1;
++
++int *g1_ptr() { return &g1; }
++char int_to_char(int x) { return x; }
++
+ int main() {
+   ASSERT(3, ret3());
+   ASSERT(8, add2(3, 5));
+@@ -56,6 +61,11 @@ int main() {
+   ASSERT(1, sub_long(7, 3, 3));
+   ASSERT(1, sub_short(7, 3, 3));
+ 
++  g1 = 3;
++
++  ASSERT(3, *g1_ptr());
++  ASSERT(5, int_to_char(261));
++
+   printf("OK\n");
+   return 0;
+ }

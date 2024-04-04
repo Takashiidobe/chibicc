@@ -1,0 +1,418 @@
+diff --git a/src/codegen.rs b/src/codegen.rs
+index c6c0ae1..a976e4c 100644
+--- a/src/codegen.rs
++++ b/src/codegen.rs
+@@ -1,5 +1,4 @@
+-use crate::errors::ErrorReporting;
+-use crate::parser::{Binding, BindingKind, Function, StmtNode, StmtKind, ExprNode, ExprKind, SourceUnit, TyKind, Ty};
++use crate::{parser::{Binding, BindingKind, Function, StmtNode, StmtKind, ExprNode, ExprKind, SourceUnit, TyKind, Ty}, context::Context};
+ 
+ const ARG_REGS8: [&str;6] = [
+     "%dil", "%sil", "%dl", "%cl", "%r8b", "%r9b"
+@@ -31,24 +30,20 @@ fn update_stack_info(node: &mut Binding) {
+ }
+ 
+ pub struct Codegen<'a> {
+-    src: &'a [u8],
++    ctx: &'a Context,
+     su: SourceUnit,
+     depth: i64,
+     id_count: usize,
+     cur_ret_lbl: Option<String>
+ }
+ 
+-impl<'a> ErrorReporting for Codegen<'a> {
+-    fn src(&self) -> &[u8] { self.src }
+-}
+-
+ impl<'a> Codegen<'a> {
+-    pub fn new(src: &'a [u8], su: SourceUnit) -> Self {
++    pub fn new(ctx: &'a Context, su: SourceUnit) -> Self {
+         for decl in &su {
+             update_stack_info(&mut decl.borrow_mut());
+         }
+         Self {
+-            src,
++            ctx,
+             su,
+             depth: 0,
+             id_count: 0,
+@@ -355,7 +350,7 @@ impl<'a> Codegen<'a> {
+             ExprKind::Deref(expr) => {
+                 self.expr(expr);
+             }
+-            _ => self.error_at(expr.offset, "not an lvalue")
++            _ => self.ctx.error_at(expr.offset, "not an lvalue")
+         };
+     }
+ 
+diff --git a/src/context.rs b/src/context.rs
+new file mode 100644
+index 0000000..cc29d77
+--- /dev/null
++++ b/src/context.rs
+@@ -0,0 +1,39 @@
++use crate::lexer::Token;
++
++pub type AsciiStr = Vec<u8>;
++
++pub struct Context {
++    pub src: AsciiStr,
++    pub filename: String,
++}
++
++impl Context {
++    pub fn error_at(&self, offset: usize, msg: &str) -> ! {
++        let mut line_start = offset;
++        while line_start > 0 && self.src[line_start] != b'\n' {
++            line_start -= 1;
++        }
++        let mut line_end = line_start + 1;
++        while self.src[line_end] != 0 && self.src[line_end] != b'\n' {
++            line_end += 1;
++        }
++        let mut line_num = 1;
++        for off in 0..=line_start {
++            if self.src[off] == b'\n' {
++                line_num += 1;
++            }
++        }
++
++        let loc = format!("{}:{}: ", &self.filename, line_num);
++
++        eprintln!("{}{}", loc, String::from_utf8_lossy(&self.src[line_start + 1..line_end]));
++        eprint!("{: <1$}", "", loc.len() + (offset - line_start - 1));
++        eprintln!("^ {}", msg);
++        panic!();
++    }
++
++    pub fn error_tok(&self, tok: &Token, msg: &str) -> ! {
++        self.error_at(tok.offset, msg);
++    }
++}
++
+diff --git a/src/errors.rs b/src/errors.rs
+deleted file mode 100644
+index c1f13dc..0000000
+--- a/src/errors.rs
++++ /dev/null
+@@ -1,16 +0,0 @@
+-use crate::lexer::Token;
+-
+-pub trait ErrorReporting {
+-  fn src(&self) -> &[u8];
+-
+-  fn error_at(&self, offset: usize, msg: &str) -> ! {
+-      eprintln!("{}", String::from_utf8_lossy(&self.src()));
+-      eprint!("{: <1$}", "", offset);
+-      eprintln!("^ {}", msg);
+-      panic!();
+-  }
+-  
+-  fn error_tok(&self, tok: &Token, msg: &str) -> ! {
+-      self.error_at(tok.offset, msg);
+-  }
+-}
+diff --git a/src/lexer.rs b/src/lexer.rs
+index 9111f99..37b1bd0 100644
+--- a/src/lexer.rs
++++ b/src/lexer.rs
+@@ -1,6 +1,6 @@
+ use std::collections::HashSet;
+ 
+-use crate::{errors::ErrorReporting, parser::AsciiStr};
++use crate::context::{Context, AsciiStr};
+ 
+ #[derive(Debug)]
+ pub enum TokenKind {
+@@ -32,22 +32,18 @@ lazy_static! {
+ }
+ 
+ pub struct Lexer<'a> {
+-    src: &'a [u8]
+-}
+-
+-impl<'a> ErrorReporting for Lexer<'a> {
+-    fn src(&self) -> &[u8] { self.src }
++    ctx: &'a Context,
+ }
+ 
+ impl<'a> Lexer<'a> {
+-    pub fn new(src: &'a [u8]) -> Self {
+-        Self { src }
++    pub fn new(ctx: &'a Context) -> Self {
++        Self { ctx }
+     }
+ 
+     pub fn tokenize(&mut self) -> Vec<Token> {
+         let mut toks = Vec::new();
+         let mut offset = 0;
+-        let src = self.src;
++        let src = &self.ctx.src;
+ 
+         while src[offset] != 0 {
+             let c = src[offset];
+@@ -58,7 +54,7 @@ impl<'a> Lexer<'a> {
+             else if c.is_ascii_digit() {
+                 let (val, count) = read_int(&src[offset..]);
+                 if count == 0 {
+-                    self.error_at(offset, "expected number")
++                    self.ctx.error_at(offset, "expected number")
+                 }
+                 toks.push(Token {
+                     offset,
+@@ -93,7 +89,7 @@ impl<'a> Lexer<'a> {
+                 let mut str = Vec::new();
+                 while src[offset] != b'"' {
+                     if src[offset] == b'\n' || src[offset] == 0 {
+-                        self.error_at(start_offset, "unclosed literal string");
++                        self.ctx.error_at(start_offset, "unclosed literal string");
+                     }
+ 
+                     if src[offset] == b'\\' {
+@@ -127,7 +123,7 @@ impl<'a> Lexer<'a> {
+                     offset += punct_len;
+                 }
+                 else {
+-                    self.error_at(offset, "invalid token");
++                    self.ctx.error_at(offset, "invalid token");
+                 }
+             }
+         }
+@@ -151,7 +147,7 @@ impl<'a> Lexer<'a> {
+ 
+         if buf[0] == b'x' {
+             if !buf[1].is_ascii_hexdigit() {
+-                self.error_at(error_offset, "invalid hex escape sequence");
++                self.ctx.error_at(error_offset, "invalid hex escape sequence");
+             }
+             let mut hex = 0;
+             let mut len = 1;
+diff --git a/src/main.rs b/src/main.rs
+index b0cde7d..65d1758 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -1,11 +1,13 @@
+ #[macro_use]
+ extern crate lazy_static;
+ 
+-use std::env;
++use std::{env, fs::read, io::{stdin, Read}};
++
++use context::Context;
+ 
+ use crate::{lexer::Lexer, parser::Parser, codegen::Codegen};
+ 
+-pub mod errors;
++pub mod context;
+ pub mod lexer;
+ pub mod parser;
+ pub mod codegen;
+@@ -16,20 +18,34 @@ fn main() {
+         panic!("{}: invalid number of arguments", args[0]);
+     }
+ 
+-    let mut src = args[1].as_bytes().to_vec();
++    let filename = &args[1];
++    let mut src;
++
++    if filename == "-" {
++        src = Vec::new();
++        stdin().read_to_end(&mut src).unwrap();
++    }
++    else {
++        src = match read(&filename) {
++            Ok(src) => src,
++            Err(err) => panic!("Failed to open {}: {:?}", &filename, err),
++        };
++    }
+ 
+     // It's nice to have a sentinel value so we don't have to keep checking bounds
+     src.push(0);
+ 
+-    let mut lexer = Lexer::new(&src);
++    let ctx = Context { src, filename: filename.to_owned() };
++
++    let mut lexer = Lexer::new(&ctx);
+ 
+     let toks = lexer.tokenize();
+ 
+-    let mut parser = Parser::new(&src, &toks);
++    let mut parser = Parser::new(&ctx, &toks);
+ 
+     let su = parser.source_unit();
+     parser.ensure_done();
+ 
+-    let mut codegen = Codegen::new(&src, su);
++    let mut codegen = Codegen::new(&ctx, su);
+     codegen.program();
+ }
+\ No newline at end of file
+diff --git a/src/parser.rs b/src/parser.rs
+index 909a83f..3b8349d 100644
+--- a/src/parser.rs
++++ b/src/parser.rs
+@@ -2,12 +2,10 @@ use std::cell::RefCell;
+ 
+ use std::rc::Rc;
+ 
+-use crate::lexer::{Token, TokenKind};
+-use crate::errors::ErrorReporting;
++use crate::{lexer::{Token, TokenKind}, context::{AsciiStr, Context}};
+ 
+ pub type P<A> = Box<A>;
+ pub type SP<A> = Rc<RefCell<A>>;
+-pub type AsciiStr = Vec<u8>;
+ 
+ #[derive(Debug)]
+ pub enum TyKind {
+@@ -128,7 +126,7 @@ pub type StmtNode = Node<StmtKind>;
+ pub type SourceUnit = Vec<SP<Binding>>;
+ 
+ pub struct Parser<'a> {
+-    src: &'a [u8],
++    ctx: &'a Context,
+     toks: &'a [Token],
+     tok_index: usize,
+     local_vars: Vec<SP<Binding>>,
+@@ -136,17 +134,13 @@ pub struct Parser<'a> {
+     next_unique_id: u64,
+ }
+ 
+-impl<'a> ErrorReporting for Parser<'a> {
+-    fn src(&self) -> &[u8] { self.src }
+-}
+-
+ impl<'a> Parser<'a> {
+-    pub fn new(src: &'a [u8], toks: &'a [Token]) -> Self {
++    pub fn new(ctx: &'a Context, toks: &'a [Token]) -> Self {
+         if toks.is_empty() {
+             panic!("Empty token array")
+         }
+         Self {
+-            src,
++            ctx,
+             toks,
+             tok_index: 0,
+             local_vars: Vec::new(),
+@@ -384,7 +378,7 @@ impl<'a> Parser<'a> {
+                 self.advance();
+                 (self.type_suffix(ty), name)
+             },
+-            _ => self.error_tok(self.peek(), "expected a variable name")
++            _ => self.ctx.error_tok(self.peek(), "expected a variable name")
+         };
+ 
+         //println!("# DECL {}: {:?}", String::from_utf8_lossy(&decl.1), decl.0);
+@@ -589,7 +583,7 @@ impl<'a> Parser<'a> {
+             return synth_add(lhs, P::new(rhs), offset)
+         }
+ 
+-        self.error_at(offset, "invalid operands");
++        self.ctx.error_at(offset, "invalid operands");
+     }
+ 
+     fn sub_overload(&self, lhs: P<ExprNode>, rhs: P<ExprNode>, offset: usize) -> ExprNode {
+@@ -612,7 +606,7 @@ impl<'a> Parser<'a> {
+             return synth_div(P::new(sub), P::new(synth_num(size, offset)), offset);
+         }
+ 
+-        self.error_at(offset, "invalid operands");
++        self.ctx.error_at(offset, "invalid operands");
+     }
+ 
+     // mul = unary ("*" unary | "/" unary)*
+@@ -755,7 +749,7 @@ impl<'a> Parser<'a> {
+                     return expr;
+                 }
+                 else {
+-                    self.error_at(offset, "undefined variable");
++                    self.ctx.error_at(offset, "undefined variable");
+                 }
+             }
+             TokenKind::Punct =>
+@@ -771,11 +765,11 @@ impl<'a> Parser<'a> {
+                                     exp.ty.clone()
+                                 }
+                                 else {
+-                                    self.error_at(offset, "the last statement in a statement expression must be an expression");
++                                    self.ctx.error_at(offset, "the last statement in a statement expression must be an expression");
+                                 }
+                             }
+                             else {
+-                                self.error_at(offset, "statement expression cannot be empty");
++                                self.ctx.error_at(offset, "statement expression cannot be empty");
+                             }
+                         }
+                         else {
+@@ -796,7 +790,7 @@ impl<'a> Parser<'a> {
+                 },
+             _ => {}
+         };
+-        self.error_tok(self.peek(), "expected an expression");
++        self.ctx.error_tok(self.peek(), "expected an expression");
+     }
+ 
+     // funcall = ident "(" (assign ("," assign)*)? ")"
+@@ -839,11 +833,11 @@ impl<'a> Parser<'a> {
+             self.advance();
+             return val
+         }
+-        self.error_tok(self.peek(), "expected a number");
++        self.ctx.error_tok(self.peek(), "expected a number");
+     }
+ 
+     fn tok_source(&self, tok: &Token) -> &[u8] {
+-        &self.src[tok.offset..(tok.offset + tok.length)]
++        &self.ctx.src[tok.offset..(tok.offset + tok.length)]
+     }
+ 
+     fn peek_is(&self, s: &str) -> bool {
+@@ -856,7 +850,7 @@ impl<'a> Parser<'a> {
+ 
+     fn skip(&mut self, s: &str) -> &Token {
+         if !self.peek_is(s) {
+-            self.error_tok(self.peek(), &format!("Expected {}", s));
++            self.ctx.error_tok(self.peek(), &format!("Expected {}", s));
+         }
+         self.advance()
+     }
+@@ -870,14 +864,14 @@ impl<'a> Parser<'a> {
+ 
+     pub fn ensure_done(&self) {
+         if !self.is_done() {
+-            self.error_tok(self.peek(), "extra token")
++            self.ctx.error_tok(self.peek(), "extra token")
+         }
+     }
+ 
+     fn synth_deref(&self, expr: P<ExprNode>, offset: usize) -> ExprNode {
+         let base_ty = get_base_ty(&expr.ty);
+         let ty = match base_ty {
+-            None => self.error_at(offset, "invalid pointer dereference"),
++            None => self.ctx.error_at(offset, "invalid pointer dereference"),
+             Some(base_ty) => base_ty.clone()
+         };
+         ExprNode { kind: ExprKind::Deref(expr), offset, ty }
+@@ -891,7 +885,7 @@ impl<'a> Parser<'a> {
+ 
+     #[allow(dead_code)]
+     fn src_rest(&self) -> std::borrow::Cow<str> {
+-        String::from_utf8_lossy(&self.src[self.peek().offset..])
++        String::from_utf8_lossy(&self.ctx.src[self.peek().offset..])
+     }
+ }
+ 
+diff --git a/test.sh b/test.sh
+index 91fe0fc..1ac42b5 100755
+--- a/test.sh
++++ b/test.sh
+@@ -14,7 +14,7 @@ assert() {
+   expected="$1"
+   input="$2"
+ 
+-  ./target/debug/chibicc "$input" > tmp.s || exit
++  echo "$input" | ./target/debug/chibicc - > tmp.s || exit
+   gcc -static -o tmp tmp.s -z execstack tmp2.o
+   ./tmp
+   actual="$?"
