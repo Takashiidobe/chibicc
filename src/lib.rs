@@ -2,6 +2,7 @@
 pub enum TokenKind {
     Punct,
     Num { val: i32 },
+    Ident { name: u8 },
     Eof,
 }
 
@@ -34,6 +35,10 @@ pub enum NodeKind {
 
     // Statement
     ExprStmt { lhs: P<Node>, next: Option<P<Node>> },
+
+    // Variables
+    Assign { lhs: P<Node>, rhs: P<Node> },
+    Var { name: u8 },
 }
 
 #[derive(Debug, Clone, PartialEq)]

@@ -86,7 +86,7 @@ impl<'a> Lexer<'a> {
                     }
                     (
                         Some(b'<') | Some(b'>') | Some(b'(') | Some(b')') | Some(b'+') | Some(b'-')
-                        | Some(b'*') | Some(b'/') | Some(b';'),
+                        | Some(b'*') | Some(b'/') | Some(b';') | Some(b'='),
                         _,
                     ) => {
                         toks.push(Token {
@@ -98,6 +98,13 @@ impl<'a> Lexer<'a> {
                     }
                     _ => {}
                 }
+            } else if c.is_ascii_alphabetic() {
+                toks.push(Token {
+                    offset: self.index,
+                    length: 1,
+                    kind: TokenKind::Ident { name: c },
+                });
+                self.index += 1;
             } else {
                 dbg!(String::from_utf8_lossy(&self.src[self.index..]));
                 self.error_at(self.index, "invalid token")

@@ -22,9 +22,20 @@ impl<'a> Codegen<'a> {
         println!("  .globl main");
         println!("main:");
 
+        // Prologue
+        println!("  push %rbp");
+        println!("  mov %rsp, %rbp");
+        println!("  sub $208, %rsp");
+        println!();
+
         for node in nodes {
             self.stmt(node);
         }
+
+        // Epilogue
+        println!();
+        println!("  mov %rbp, %rsp");
+        println!("  pop %rbp");
 
         println!("  ret");
     }
@@ -41,6 +52,16 @@ impl<'a> Codegen<'a> {
 
     fn stmt(&mut self, node: &Node) {
         self.expr(node);
+    }
+
+    fn addr(&mut self, node: &Node) {
+        match node.kind {
+            NodeKind::Var { name } => {
+                let offset: i32 = ((name - b'a' + 1) * 8).into();
+                println!("  lea {}(%rbp), %rax", -offset);
+            }
+            _ => self.error_at(0, "not an lvalue"),
+        }
     }
 
     fn expr(&mut self, node: &Node) {
@@ -116,6 +137,17 @@ impl<'a> Codegen<'a> {
                 println!("  movzb %al, %rax");
             }
             NodeKind::ExprStmt { .. } => {}
+            NodeKind::Var { .. } => {
+                self.addr(node);
+                println!("  mov (%rax), %rax");
+            }
+            NodeKind::Assign { ref lhs, ref rhs } => {
+                self.addr(lhs);
+                self.push();
+                self.expr(rhs);
+                self.pop("%rdi");
+                println!("  mov %rax, (%rdi)");
+            }
         };
     }
 }

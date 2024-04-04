@@ -38,9 +38,9 @@ impl<'a> Parser<'a> {
         statements
     }
 
-    // expr = equality
+    // expr = assign
     fn expr(&mut self) -> Node {
-        self.equality()
+        self.assign()
     }
 
     // stmt = expr-stmt
@@ -52,6 +52,23 @@ impl<'a> Parser<'a> {
     fn expr_stmt(&mut self) -> Node {
         let node = self.expr();
         self.skip(";");
+        node
+    }
+
+    // assign = equality ("=" assign)?
+    fn assign(&mut self) -> Node {
+        let mut node = self.equality();
+
+        if self.r#match("=") {
+            self.advance();
+            node = Node {
+                kind: NodeKind::Assign {
+                    lhs: P::new(node),
+                    rhs: P::new(self.assign()),
+                },
+            };
+        }
+
         node
     }
 
@@ -207,7 +224,7 @@ impl<'a> Parser<'a> {
         self.primary()
     }
 
-    // primary = "(" expr ")" | num
+    // primary = "(" expr ")" | ident | num
     fn primary(&mut self) -> Node {
         match self.peek().kind {
             TokenKind::Num { val } => {
@@ -223,6 +240,13 @@ impl<'a> Parser<'a> {
                     self.skip(")");
                     return node;
                 }
+            }
+            TokenKind::Ident { name } => {
+                let node = Node {
+                    kind: NodeKind::Var { name },
+                };
+                self.advance();
+                return node;
             }
             _ => {}
         };
