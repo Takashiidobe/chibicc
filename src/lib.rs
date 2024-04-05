@@ -115,6 +115,13 @@ pub enum NodeKind {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Node {
     kind: NodeKind,
+    token: Token, // Representative Token
+}
+
+impl Node {
+    pub fn new(kind: NodeKind, token: Token) -> Self {
+        Self { kind, token }
+    }
 }
 
 trait ErrorReporting {

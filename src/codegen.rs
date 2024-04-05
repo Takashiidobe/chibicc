@@ -76,7 +76,7 @@ impl<'a> Codegen<'a> {
                 let offset = *self.vars.get(name).unwrap();
                 println!("  lea -{}(%rbp), %rax", offset);
             }
-            _ => self.error_at(0, "not an lvalue"),
+            _ => self.error_tok(&node.token, "not an lvalue"),
         }
     }
 

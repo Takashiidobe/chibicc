@@ -41,9 +41,7 @@ impl<'a> Parser<'a> {
             panic!("Did not parse to the end");
         }
         (
-            Node {
-                kind: NodeKind::Block { body: block },
-            },
+            Node::new(NodeKind::Block { body: block }, self.curr_token()),
             self.vars.clone(),
         )
     }
@@ -65,9 +63,7 @@ impl<'a> Parser<'a> {
             let node = self.expr();
             self.skip(";");
 
-            return Node {
-                kind: NodeKind::Return { lhs: P::new(node) },
-            };
+            return Node::new(NodeKind::Return { lhs: P::new(node) }, self.curr_token());
         }
 
         if self.r#match("if") {
@@ -80,21 +76,23 @@ impl<'a> Parser<'a> {
 
             return if self.r#match("else") {
                 self.advance();
-                Node {
-                    kind: NodeKind::If {
+                Node::new(
+                    NodeKind::If {
                         cond,
                         then,
                         r#else: Some(P::new(self.stmt())),
                     },
-                }
+                    self.curr_token(),
+                )
             } else {
-                Node {
-                    kind: NodeKind::If {
+                return Node::new(
+                    NodeKind::If {
                         cond,
                         then,
                         r#else: None,
                     },
-                }
+                    self.curr_token(),
+                );
             };
         }
 
@@ -116,14 +114,15 @@ impl<'a> Parser<'a> {
 
             let then = P::new(self.stmt());
 
-            return Node {
-                kind: NodeKind::For {
+            return Node::new(
+                NodeKind::For {
                     init,
                     cond,
                     then,
                     inc,
                 },
-            };
+                self.curr_token(),
+            );
         }
 
         if self.r#match("while") {
@@ -142,6 +141,7 @@ impl<'a> Parser<'a> {
                     then,
                     inc,
                 },
+                token: self.curr_token(),
             };
         }
 
@@ -151,6 +151,7 @@ impl<'a> Parser<'a> {
                 kind: NodeKind::Block {
                     body: self.compound_stmt(),
                 },
+                token: self.curr_token(),
             };
         }
         self.expr_stmt()
@@ -173,9 +174,7 @@ impl<'a> Parser<'a> {
     fn expr_stmt(&mut self) -> Node {
         if self.r#match(";") {
             self.advance();
-            return Node {
-                kind: NodeKind::Block { body: vec![] },
-            };
+            return Node::new(NodeKind::Block { body: vec![] }, self.curr_token());
         }
         let node = self.expr();
         self.skip(";");
@@ -188,12 +187,13 @@ impl<'a> Parser<'a> {
 
         if self.r#match("=") {
             self.advance();
-            node = Node {
-                kind: NodeKind::Assign {
+            node = Node::new(
+                NodeKind::Assign {
                     lhs: P::new(node),
                     rhs: P::new(self.assign()),
                 },
-            };
+                self.curr_token(),
+            );
         }
 
         node
@@ -206,20 +206,22 @@ impl<'a> Parser<'a> {
         loop {
             if self.r#match("==") {
                 self.advance();
-                node = Node {
-                    kind: NodeKind::Eq {
+                node = Node::new(
+                    NodeKind::Eq {
                         lhs: P::new(node),
                         rhs: P::new(self.relational()),
                     },
-                };
+                    self.curr_token(),
+                );
             } else if self.r#match("!=") {
                 self.advance();
-                node = Node {
-                    kind: NodeKind::Ne {
+                node = Node::new(
+                    NodeKind::Ne {
                         lhs: P::new(node),
                         rhs: P::new(self.relational()),
                     },
-                };
+                    self.curr_token(),
+                );
             } else {
                 break;
             }
@@ -235,36 +237,40 @@ impl<'a> Parser<'a> {
         loop {
             if self.r#match("<") {
                 self.advance();
-                node = Node {
-                    kind: NodeKind::Lt {
+                node = Node::new(
+                    NodeKind::Lt {
                         lhs: P::new(node),
                         rhs: P::new(self.add()),
                     },
-                };
+                    self.curr_token(),
+                );
             } else if self.r#match("<=") {
                 self.advance();
-                node = Node {
-                    kind: NodeKind::Le {
+                node = Node::new(
+                    NodeKind::Le {
                         lhs: P::new(node),
                         rhs: P::new(self.add()),
                     },
-                };
+                    self.curr_token(),
+                );
             } else if self.r#match(">") {
                 self.advance();
-                node = Node {
-                    kind: NodeKind::Lt {
+                node = Node::new(
+                    NodeKind::Lt {
                         lhs: P::new(self.add()),
                         rhs: P::new(node),
                     },
-                };
+                    self.curr_token(),
+                );
             } else if self.r#match(">=") {
                 self.advance();
-                node = Node {
-                    kind: NodeKind::Le {
+                node = Node::new(
+                    NodeKind::Le {
                         lhs: P::new(self.add()),
                         rhs: P::new(node),
                     },
-                };
+                    self.curr_token(),
+                );
             } else {
                 break;
             }
@@ -280,20 +286,22 @@ impl<'a> Parser<'a> {
         while let TokenKind::Punct = self.peek().kind {
             if self.r#match("+") {
                 self.advance();
-                node = Node {
-                    kind: NodeKind::Add {
+                node = Node::new(
+                    NodeKind::Add {
                         lhs: P::new(node),
                         rhs: P::new(self.mul()),
                     },
-                }
+                    self.curr_token(),
+                );
             } else if self.r#match("-") {
                 self.advance();
-                node = Node {
-                    kind: NodeKind::Sub {
+                node = Node::new(
+                    NodeKind::Sub {
                         lhs: P::new(node),
                         rhs: P::new(self.mul()),
                     },
-                }
+                    self.curr_token(),
+                );
             } else {
                 break;
             }
@@ -309,20 +317,22 @@ impl<'a> Parser<'a> {
         while let TokenKind::Punct = self.peek().kind {
             if self.r#match("*") {
                 self.advance();
-                node = Node {
-                    kind: NodeKind::Mul {
+                node = Node::new(
+                    NodeKind::Mul {
                         lhs: P::new(node),
                         rhs: P::new(self.unary()),
                     },
-                }
+                    self.curr_token(),
+                );
             } else if self.r#match("/") {
                 self.advance();
-                node = Node {
-                    kind: NodeKind::Div {
+                node = Node::new(
+                    NodeKind::Div {
                         lhs: P::new(node),
                         rhs: P::new(self.unary()),
                     },
-                }
+                    self.curr_token(),
+                )
             } else {
                 break;
             }
@@ -341,11 +351,12 @@ impl<'a> Parser<'a> {
 
         if self.r#match("-") {
             self.advance();
-            return Node {
-                kind: NodeKind::Neg {
+            return Node::new(
+                NodeKind::Neg {
                     expr: P::new(self.unary()),
                 },
-            };
+                self.curr_token(),
+            );
         }
 
         self.primary()
@@ -357,9 +368,7 @@ impl<'a> Parser<'a> {
         match c.kind {
             TokenKind::Num { val } => {
                 self.advance();
-                return Node {
-                    kind: NodeKind::Num { val },
-                };
+                return Node::new(NodeKind::Num { val }, self.curr_token());
             }
             TokenKind::Punct => {
                 if self.r#match("(") {
@@ -375,11 +384,12 @@ impl<'a> Parser<'a> {
                     self.vars.insert(name.to_string(), offset);
                 }
 
-                let node = Node {
-                    kind: NodeKind::Var {
+                let node = Node::new(
+                    NodeKind::Var {
                         name: name.to_string(),
                     },
-                };
+                    self.curr_token(),
+                );
                 self.advance();
                 return node;
             }
@@ -416,6 +426,10 @@ impl<'a> Parser<'a> {
             TokenKind::Eof => {}
             _ => self.error_tok(self.peek(), "extra token"),
         }
+    }
+
+    fn curr_token(&self) -> Token {
+        self.toks[self.tok_index].clone()
     }
 
     fn is_done(&self) -> bool {
