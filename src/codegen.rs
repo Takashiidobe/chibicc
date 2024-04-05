@@ -1,5 +1,7 @@
 use crate::errors::ErrorReporting;
-use crate::parser::{ExprKind, ExprNode, SourceUnit, StmtKind, StmtNode, TopDeclKind, TopDeclNode};
+use crate::parser::{
+    ExprKind, ExprNode, SourceUnit, StmtKind, StmtNode, TopDeclKind, TopDeclNode, Type, TypeKind,
+};
 
 const ARG_REGS: [&str; 6] = ["%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"];
 
@@ -12,8 +14,9 @@ fn update_stack_info(node: &mut TopDeclNode) {
         } => {
             let mut offset = 0;
             for local in locals {
-                offset -= 8;
                 let mut local = local.borrow_mut();
+                let type_size: i64 = local.r#type.size.try_into().unwrap();
+                offset -= type_size;
                 local.stack_offset = offset;
             }
             *stack_size = align_to(-offset, 16);
@@ -146,16 +149,6 @@ impl<'a> Codegen<'a> {
         }
     }
 
-    fn push(&mut self) {
-        println!("  push %rax");
-        self.depth += 1;
-    }
-
-    fn pop(&mut self, arg: &str) {
-        println!("  pop {}", arg);
-        self.depth -= 1;
-    }
-
     fn expr(&mut self, node: &ExprNode) {
         match node.kind {
             ExprKind::Num(val) => println!("  mov ${}, %rax", val),
@@ -165,21 +158,20 @@ impl<'a> Codegen<'a> {
             }
             ExprKind::Var(_) => {
                 self.addr(node);
-                println!("  mov (%rax), %rax");
+                self.load(&node.r#type);
             }
             ExprKind::Addr(ref expr) => {
                 self.addr(expr);
             }
             ExprKind::Deref(ref expr) => {
                 self.expr(expr);
-                println!("  mov (%rax), %rax");
+                self.load(&node.r#type);
             }
             ExprKind::Assign(ref lhs, ref rhs) => {
                 self.addr(lhs);
                 self.push();
                 self.expr(rhs);
-                self.pop("%rdi");
-                println!("  mov %rax, (%rdi)");
+                self.store();
             }
             ExprKind::Add(ref lhs, ref rhs) => {
                 self.expr(rhs);
@@ -258,6 +250,28 @@ impl<'a> Codegen<'a> {
                 println!("  call {}", String::from_utf8_lossy(name));
             }
         };
+    }
+
+    fn load(&self, r#type: &Type) {
+        if let TypeKind::Array(_, _) = r#type.kind {
+            return;
+        }
+        println!("  mov (%rax), %rax");
+    }
+
+    fn store(&mut self) {
+        self.pop("%rdi");
+        println!("  mov %rax, (%rdi)");
+    }
+
+    fn push(&mut self) {
+        println!("  push %rax");
+        self.depth += 1;
+    }
+
+    fn pop(&mut self, arg: &str) {
+        println!("  pop {}", arg);
+        self.depth -= 1;
     }
 
     fn addr(&mut self, expr: &ExprNode) {

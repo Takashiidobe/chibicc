@@ -8,29 +8,70 @@ pub type P<A> = Box<A>;
 pub type SP<A> = Rc<RefCell<A>>;
 pub type AsciiStr = Vec<u8>;
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum Type {
+#[derive(Debug, Clone)]
+pub enum TypeKind {
     Int,
     Ptr(P<Type>),
+    Fn(P<Type>, Vec<P<Type>>),
+    Array(P<Type>, usize),
     Unit,
-    Fn(P<Type>, Vec<Type>),
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
+pub struct Type {
+    pub kind: TypeKind,
+    pub size: usize,
+}
+
+impl Type {
+    fn int() -> Type {
+        Type {
+            kind: TypeKind::Int,
+            size: 8,
+        }
+    }
+    fn unit() -> Type {
+        Type {
+            kind: TypeKind::Unit,
+            size: 0,
+        }
+    }
+    fn ptr(base: P<Type>) -> Type {
+        Type {
+            kind: TypeKind::Ptr(base),
+            size: 8,
+        }
+    }
+    fn func(ret: P<Type>, params: Vec<P<Type>>) -> Type {
+        Type {
+            kind: TypeKind::Fn(ret, params),
+            size: 0,
+        }
+    }
+    fn array(base: P<Type>, len: usize) -> Type {
+        let base_size = base.size;
+        Type {
+            kind: TypeKind::Array(base, len),
+            size: base_size * len,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct Node<Kind> {
     pub kind: Kind,
     pub offset: usize,
     pub r#type: Type,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct VarData {
     pub name: AsciiStr,
     pub r#type: Type,
     pub stack_offset: i64,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub enum ExprKind {
     Num(i64),
     Var(SP<VarData>),
@@ -38,7 +79,7 @@ pub enum ExprKind {
     Addr(P<ExprNode>),
     Deref(P<ExprNode>),
 
-    Funcall(AsciiStr, Vec<ExprNode>),
+    Funcall(AsciiStr, Vec<P<ExprNode>>),
 
     Add(P<ExprNode>, P<ExprNode>),
     Sub(P<ExprNode>, P<ExprNode>),
@@ -54,7 +95,7 @@ pub enum ExprKind {
     Assign(P<ExprNode>, P<ExprNode>),
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub enum StmtKind {
     Expr(ExprNode),
     Return(ExprNode),
@@ -68,7 +109,7 @@ pub enum StmtKind {
     ),
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub enum TopDeclKind {
     Function {
         name: AsciiStr,
@@ -84,7 +125,6 @@ pub type StmtNode = Node<StmtKind>;
 pub type TopDeclNode = Node<TopDeclKind>;
 pub type SourceUnit = Vec<TopDeclNode>;
 
-#[derive(Debug, Clone, PartialEq)]
 pub struct Parser<'a> {
     src: &'a [u8],
     toks: &'a [Token],
@@ -113,7 +153,7 @@ impl<'a> Parser<'a> {
 
     // source_unit = stmt+
     pub fn source_unit(&mut self) -> SourceUnit {
-        let mut fns = vec![];
+        let mut fns = Vec::new();
         loop {
             match self.peek().kind {
                 TokenKind::Eof => break,
@@ -127,15 +167,14 @@ impl<'a> Parser<'a> {
         self.vars.clear();
 
         let offset = self.peek().offset;
-
         let r#type = self.declspec();
         let (r#type, name) = self.declarator(&r#type);
 
         let params = self.vars.clone();
 
         let body = self.compound_stmt();
-        let mut locals = self.vars.clone();
-        locals.reverse();
+        // Reverse them to keep the locals layout in line with chibicc
+        let locals: Vec<SP<VarData>> = self.vars.clone().into_iter().rev().collect();
         TopDeclNode {
             kind: TopDeclKind::Function {
                 name,
@@ -156,48 +195,48 @@ impl<'a> Parser<'a> {
     //      | "{" compound-stmt
     //      | expr-stmt
     fn stmt(&mut self) -> StmtNode {
-        if self.r#match("return") {
+        if self.peek_is("return") {
             let offset = self.advance().offset;
             let expr = self.expr();
             self.skip(";");
             return StmtNode {
                 kind: StmtKind::Return(expr),
                 offset,
-                r#type: Type::Unit,
+                r#type: Type::unit(),
             };
         }
 
-        if self.r#match("if") {
+        if self.peek_is("if") {
             let offset = self.advance().offset;
             self.skip("(");
             let cond = P::new(self.expr());
             self.skip(")");
             let then_stmt = P::new(self.stmt());
             let mut else_stmt = None;
-            if self.r#match("else") {
+            if self.peek_is("else") {
                 self.advance();
                 else_stmt = Some(P::new(self.stmt()));
             }
             return StmtNode {
                 kind: StmtKind::If(cond, then_stmt, else_stmt),
                 offset,
-                r#type: Type::Unit,
+                r#type: Type::unit(),
             };
         }
 
-        if self.r#match("for") {
+        if self.peek_is("for") {
             let offset = self.advance().offset;
             self.skip("(");
             let init = Some(P::new(self.expr_stmt()));
 
             let mut cond = None;
-            if !self.r#match(";") {
+            if !self.peek_is(";") {
                 cond = Some(P::new(self.expr()));
             }
             self.skip(";");
 
             let mut inc = None;
-            if !self.r#match(")") {
+            if !self.peek_is(")") {
                 inc = Some(P::new(self.expr()));
             }
             self.skip(")");
@@ -207,11 +246,11 @@ impl<'a> Parser<'a> {
             return StmtNode {
                 kind: StmtKind::For(init, cond, inc, body),
                 offset,
-                r#type: Type::Unit,
+                r#type: Type::unit(),
             };
         }
 
-        if self.r#match("while") {
+        if self.peek_is("while") {
             let offset = self.advance().offset;
             self.skip("(");
             let cond = Some(P::new(self.expr()));
@@ -220,11 +259,11 @@ impl<'a> Parser<'a> {
             return StmtNode {
                 kind: StmtKind::For(None, cond, None, body),
                 offset,
-                r#type: Type::Unit,
+                r#type: Type::unit(),
             };
         }
 
-        if self.r#match("{") {
+        if self.peek_is("{") {
             return self.compound_stmt();
         }
 
@@ -235,8 +274,8 @@ impl<'a> Parser<'a> {
     fn compound_stmt(&mut self) -> StmtNode {
         let offset = self.skip("{").offset;
         let mut stmts = Vec::new();
-        while !self.r#match("}") {
-            if self.r#match("int") {
+        while !self.peek_is("}") {
+            if self.peek_is("int") {
                 self.declaration(&mut stmts);
             } else {
                 stmts.push(self.stmt());
@@ -246,23 +285,23 @@ impl<'a> Parser<'a> {
         StmtNode {
             kind: StmtKind::Block(stmts),
             offset,
-            r#type: Type::Unit,
+            r#type: Type::unit(),
         }
     }
 
     // declaration = declspec (declarator ("=" expr)? ("," declarator ("=" expr)?)*)? ";"
     fn declaration(&mut self, stmts: &mut Vec<StmtNode>) {
-        let base_type = self.declspec();
+        let base_ty = self.declspec();
 
         let mut count = 0;
-        while !self.r#match(";") {
+        while !self.peek_is(";") {
             if count > 0 {
                 self.skip(",");
             }
             count += 1;
 
             let offset = self.peek().offset;
-            let (r#type, name) = self.declarator(&base_type);
+            let (r#type, name) = self.declarator(&base_ty);
             let var_data = Rc::new(RefCell::new(VarData {
                 name,
                 r#type: r#type.clone(),
@@ -270,7 +309,7 @@ impl<'a> Parser<'a> {
             }));
             self.vars.push(var_data.clone());
 
-            if !self.r#match("=") {
+            if !self.peek_is("=") {
                 continue;
             }
 
@@ -278,19 +317,17 @@ impl<'a> Parser<'a> {
             let lhs = ExprNode {
                 kind: ExprKind::Var(var_data),
                 offset,
-                r#type,
+                r#type: r#type.clone(),
             };
             let rhs = self.assign();
-            let rhs_type = rhs.r#type.clone();
-
             stmts.push(StmtNode {
                 kind: StmtKind::Expr(ExprNode {
                     kind: ExprKind::Assign(P::new(lhs), P::new(rhs)),
                     offset,
-                    r#type: rhs_type,
+                    r#type,
                 }),
                 offset,
-                r#type: Type::Unit,
+                r#type: Type::unit(),
             });
         }
     }
@@ -298,58 +335,77 @@ impl<'a> Parser<'a> {
     // declspec = "int"
     fn declspec(&mut self) -> Type {
         self.skip("int");
-        Type::Int
+        Type::int()
     }
 
     // declarator = "*"* ident type-suffix
     fn declarator(&mut self, base_type: &Type) -> (Type, AsciiStr) {
         let mut r#type = base_type.clone();
-        while self.r#match("*") {
+        while self.peek_is("*") {
             self.advance();
-            r#type = Type::Ptr(P::new(r#type));
+            r#type = Type::ptr(P::new(r#type));
         }
 
-        match self.peek().kind {
+        let decl = match self.peek().kind {
             TokenKind::Ident => {
                 let name = self.tok_source(self.peek()).to_owned();
                 self.advance();
                 (self.type_suffix(r#type), name)
             }
             _ => self.error_tok(self.peek(), "expected a variable name"),
-        }
+        };
+
+        println!("# DECL {}: {:?}", String::from_utf8_lossy(&decl.1), decl.0);
+        decl
     }
 
+    // type-suffix = "(" func-params
+    //             | "[" num "]"
+    //             | ε
     fn type_suffix(&mut self, r#type: Type) -> Type {
-        if self.r#match("(") {
-            let mut params = vec![];
+        if self.peek_is("(") {
+            return self.func_params(r#type);
+        }
+
+        if self.peek_is("[") {
             self.advance();
-            while !self.r#match(")") {
-                if !params.is_empty() {
-                    self.skip(",");
-                }
-                let base_type = self.declspec();
-                let (r#type, name) = self.declarator(&base_type);
-                params.push(r#type.clone());
-                self.vars.push(Rc::new(RefCell::new(VarData {
-                    name,
-                    r#type,
-                    stack_offset: -1,
-                })));
-            }
-            self.skip(")");
-            return Type::Fn(P::new(r#type), params);
+            let len = self.get_number();
+            self.skip("]");
+            return Type::array(P::new(r#type), len.try_into().unwrap());
         }
         r#type
     }
 
+    // func-params = (param ("," param)*)? ")"
+    // param       = declspec declarator
+    fn func_params(&mut self, r#type: Type) -> Type {
+        let mut params = Vec::new();
+        self.advance();
+        while !self.peek_is(")") {
+            if params.len() > 0 {
+                self.skip(",");
+            }
+            let base_ty = self.declspec();
+            let (r#type, name) = self.declarator(&base_ty);
+            params.push(P::new(r#type.clone()));
+            self.vars.push(Rc::new(RefCell::new(VarData {
+                name,
+                r#type,
+                stack_offset: -1,
+            })));
+        }
+        self.skip(")");
+        return Type::func(P::new(r#type), params);
+    }
+
     // expr-stmt = expr? ";"
     fn expr_stmt(&mut self) -> StmtNode {
-        if self.r#match(";") {
+        if self.peek_is(";") {
             let offset = self.advance().offset;
             return StmtNode {
                 kind: StmtKind::Block(Vec::new()),
                 offset,
-                r#type: Type::Unit,
+                r#type: Type::unit(),
             };
         }
 
@@ -359,7 +415,7 @@ impl<'a> Parser<'a> {
         StmtNode {
             kind: StmtKind::Expr(expr),
             offset,
-            r#type: Type::Unit,
+            r#type: Type::unit(),
         }
     }
 
@@ -371,11 +427,15 @@ impl<'a> Parser<'a> {
     // assign = equality ("=" assign)?
     fn assign(&mut self) -> ExprNode {
         let mut node = self.equality();
-        if self.r#match("=") {
+        if self.peek_is("=") {
             let offset = self.advance().offset;
+            let rhs = P::new(self.assign());
             let r#type = node.r#type.clone();
+            if let TypeKind::Array(_, _) = r#type.kind {
+                self.error_at(node.offset, "not an lvalue");
+            }
             node = ExprNode {
-                kind: ExprKind::Assign(P::new(node), P::new(self.assign())),
+                kind: ExprKind::Assign(P::new(node), rhs),
                 offset,
                 r#type,
             };
@@ -388,19 +448,19 @@ impl<'a> Parser<'a> {
         let mut node = self.relational();
 
         loop {
-            if self.r#match("==") {
+            if self.peek_is("==") {
                 let offset = self.advance().offset;
                 node = ExprNode {
                     kind: ExprKind::Eq(P::new(node), P::new(self.relational())),
                     offset,
-                    r#type: Type::Int,
+                    r#type: Type::int(),
                 };
-            } else if self.r#match("!=") {
+            } else if self.peek_is("!=") {
                 let offset = self.advance().offset;
                 node = ExprNode {
                     kind: ExprKind::Ne(P::new(node), P::new(self.relational())),
                     offset,
-                    r#type: Type::Int,
+                    r#type: Type::int(),
                 };
             } else {
                 break;
@@ -415,33 +475,33 @@ impl<'a> Parser<'a> {
         let mut node = self.add();
 
         loop {
-            if self.r#match("<") {
+            if self.peek_is("<") {
                 let offset = self.advance().offset;
                 node = ExprNode {
                     kind: ExprKind::Lt(P::new(node), P::new(self.add())),
                     offset,
-                    r#type: Type::Int,
+                    r#type: Type::int(),
                 };
-            } else if self.r#match("<=") {
+            } else if self.peek_is("<=") {
                 let offset = self.advance().offset;
                 node = ExprNode {
                     kind: ExprKind::Le(P::new(node), P::new(self.add())),
                     offset,
-                    r#type: Type::Int,
+                    r#type: Type::int(),
                 };
-            } else if self.r#match(">") {
+            } else if self.peek_is(">") {
                 let offset = self.advance().offset;
                 node = ExprNode {
                     kind: ExprKind::Lt(P::new(self.add()), P::new(node)),
                     offset,
-                    r#type: Type::Int,
+                    r#type: Type::int(),
                 };
-            } else if self.r#match(">=") {
+            } else if self.peek_is(">=") {
                 let offset = self.advance().offset;
                 node = ExprNode {
                     kind: ExprKind::Le(P::new(self.add()), P::new(node)),
                     offset,
-                    r#type: Type::Int,
+                    r#type: Type::int(),
                 };
             } else {
                 break;
@@ -456,11 +516,11 @@ impl<'a> Parser<'a> {
         let mut node = self.mul();
 
         loop {
-            if self.r#match("+") {
+            if self.peek_is("+") {
                 let offset = self.advance().offset;
                 let rhs = P::new(self.mul());
                 node = self.add_overload(P::new(node), rhs, offset);
-            } else if self.r#match("-") {
+            } else if self.peek_is("-") {
                 let offset = self.advance().offset;
                 let rhs = P::new(self.mul());
                 node = self.sub_overload(P::new(node), rhs, offset);
@@ -472,12 +532,94 @@ impl<'a> Parser<'a> {
         node
     }
 
+    fn add_overload(&self, lhs: P<ExprNode>, rhs: P<ExprNode>, offset: usize) -> ExprNode {
+        let mut lhs = lhs;
+        let mut rhs = rhs;
+
+        if let TypeKind::Int = lhs.r#type.kind {
+            if let TypeKind::Ptr(_) = rhs.r#type.kind {
+                let tmp = lhs;
+                lhs = rhs;
+                rhs = tmp;
+            }
+        }
+
+        match (&lhs.r#type.kind, &rhs.r#type.kind) {
+            (TypeKind::Int, TypeKind::Int) => ExprNode {
+                kind: ExprKind::Add(lhs, rhs),
+                offset,
+                r#type: Type::int(),
+            },
+            (TypeKind::Ptr(_), TypeKind::Int) | (TypeKind::Array(_, _), TypeKind::Int) => {
+                let rhs = P::new(ExprNode {
+                    kind: ExprKind::Mul(
+                        P::new(ExprNode {
+                            kind: ExprKind::Num(8),
+                            offset,
+                            r#type: Type::int(),
+                        }),
+                        rhs,
+                    ),
+                    offset,
+                    r#type: Type::int(),
+                });
+                let r#type = lhs.r#type.clone();
+                ExprNode {
+                    kind: ExprKind::Add(lhs, rhs),
+                    offset,
+                    r#type,
+                }
+            }
+            _ => self.error_at(offset, "invalid operands"),
+        }
+    }
+
+    fn sub_overload(&self, lhs: P<ExprNode>, rhs: P<ExprNode>, offset: usize) -> ExprNode {
+        match (&lhs.r#type.kind, &rhs.r#type.kind) {
+            (TypeKind::Int, TypeKind::Int) => ExprNode {
+                kind: ExprKind::Sub(lhs, rhs),
+                offset,
+                r#type: Type::int(),
+            },
+            (TypeKind::Ptr(_), TypeKind::Int) | (TypeKind::Array(_, _), TypeKind::Int) => {
+                let rhs = P::new(ExprNode {
+                    kind: ExprKind::Mul(synth_num(8, offset), rhs),
+                    offset,
+                    r#type: Type::int(),
+                });
+                let r#type = lhs.r#type.clone();
+                ExprNode {
+                    kind: ExprKind::Sub(lhs, rhs),
+                    offset,
+                    r#type,
+                }
+            }
+            // TODO better way than combinatorial explosion?
+            (TypeKind::Ptr(_), TypeKind::Ptr(_))
+            | (TypeKind::Array(_, _), TypeKind::Ptr(_))
+            | (TypeKind::Ptr(_), TypeKind::Array(_, _))
+            | (TypeKind::Array(_, _), TypeKind::Array(_, _)) => {
+                let node = P::new(ExprNode {
+                    kind: ExprKind::Sub(lhs, rhs),
+                    offset,
+                    r#type: Type::int(),
+                });
+                ExprNode {
+                    kind: ExprKind::Div(node, synth_num(8, offset)),
+                    offset,
+                    r#type: Type::int(),
+                }
+            }
+            _ => self.error_at(offset, "invalid operands"),
+        }
+    }
+
     // mul = unary ("*" unary | "/" unary)*
     fn mul(&mut self) -> ExprNode {
         let mut node = self.unary();
 
         loop {
-            if self.r#match("*") {
+            if self.peek_is("*") {
                 let offset = self.advance().offset;
                 let r#type = node.r#type.clone();
                 node = ExprNode {
@@ -485,7 +627,7 @@ impl<'a> Parser<'a> {
                     offset,
                     r#type,
                 };
-            } else if self.r#match("/") {
+            } else if self.peek_is("/") {
                 let offset = self.advance().offset;
                 let r#type = node.r#type.clone();
                 node = ExprNode {
@@ -504,16 +646,15 @@ impl<'a> Parser<'a> {
     // unary = ("+" | "-" | "*" | "&") unary
     //       | primary
     fn unary(&mut self) -> ExprNode {
-        if self.r#match("+") {
+        if self.peek_is("+") {
             self.advance();
             return self.unary();
         }
 
-        if self.r#match("-") {
+        if self.peek_is("-") {
             let offset = self.advance().offset;
             let node = P::new(self.unary());
             let r#type = node.r#type.clone();
-
             return ExprNode {
                 kind: ExprKind::Neg(node),
                 offset,
@@ -521,11 +662,13 @@ impl<'a> Parser<'a> {
             };
         }
 
-        if self.r#match("&") {
+        if self.peek_is("&") {
             let offset = self.advance().offset;
             let node = P::new(self.unary());
-            let r#type = Type::Ptr(P::new(node.r#type.clone()));
-
+            let r#type = match &node.r#type.kind {
+                TypeKind::Array(base_type, _) => Type::ptr(P::new(*base_type.clone())),
+                _ => Type::ptr(P::new(node.r#type.clone())),
+            };
             return ExprNode {
                 kind: ExprKind::Addr(node),
                 offset,
@@ -533,17 +676,17 @@ impl<'a> Parser<'a> {
             };
         }
 
-        if self.r#match("*") {
+        if self.peek_is("*") {
             let offset = self.advance().offset;
-
             let node = P::new(self.unary());
-
-            let r#type = if let Type::Ptr(ref base) = node.r#type {
-                *base.clone()
-            } else {
-                Type::Int
+            let r#type = match &node.r#type.kind {
+                TypeKind::Ptr(base) => *base.clone(),
+                TypeKind::Array(base, _) => *base.clone(),
+                _ => {
+                    println!("{:?}", node);
+                    self.error_at(offset, "invalid pointer dereference")
+                }
             };
-
             return ExprNode {
                 kind: ExprKind::Deref(node),
                 offset,
@@ -554,8 +697,7 @@ impl<'a> Parser<'a> {
         self.primary()
     }
 
-    // primary = "(" expr ")" | ident args? | num
-    // args = "(" ")"
+    // primary = "(" expr ")" | funcall | num
     fn primary(&mut self) -> ExprNode {
         match self.peek().kind {
             TokenKind::Num(val) => {
@@ -563,11 +705,11 @@ impl<'a> Parser<'a> {
                 return ExprNode {
                     kind: ExprKind::Num(val),
                     offset,
-                    r#type: Type::Int,
+                    r#type: Type::int(),
                 };
             }
             TokenKind::Ident => {
-                if self.match_ahead(1, "(") {
+                if self.la_is(1, "(") {
                     return self.funcall();
                 }
 
@@ -578,17 +720,19 @@ impl<'a> Parser<'a> {
 
                 let var_data = self.vars.iter().find(|v| v.borrow().name == name);
                 if let Some(var_data) = var_data {
+                    let r#type = var_data.borrow_mut().r#type.clone();
                     let expr = ExprNode {
                         kind: ExprKind::Var(var_data.clone()),
                         offset,
-                        r#type: Type::Int,
+                        r#type,
                     };
                     return expr;
+                } else {
+                    self.error_at(offset, "undefined variable");
                 }
-                self.error_at(offset, "undefined variable");
             }
             TokenKind::Punct => {
-                if self.r#match("(") {
+                if self.peek_is("(") {
                     self.advance();
                     let node = self.expr();
                     self.skip(")");
@@ -600,38 +744,36 @@ impl<'a> Parser<'a> {
         self.error_tok(self.peek(), "expected an expression");
     }
 
-    // funcall = ident "(" (assign ("," assign)*? ")"
+    // funcall = ident "(" (assign ("," assign)*)? ")"
     fn funcall(&mut self) -> ExprNode {
         let tok = self.peek();
         let offset = tok.offset;
         let fn_name = self.tok_source(tok).to_owned();
         self.advance();
 
-        let mut args = vec![];
+        let mut args = Vec::new();
         self.skip("(");
-        while !self.r#match(")") {
-            if !args.is_empty() {
+        while !self.peek_is(")") {
+            if args.len() > 0 {
                 self.skip(",");
             }
-            args.push(self.assign());
+            args.push(P::new(self.assign()));
         }
         self.skip(")");
 
         ExprNode {
             kind: ExprKind::Funcall(fn_name, args),
             offset,
-            r#type: Type::Int,
+            r#type: Type::int(),
         }
     }
 
     fn peek(&self) -> &Token {
         &self.toks[self.tok_index]
     }
-
-    fn peek_n(&self, n: usize) -> &Token {
+    fn la(&self, n: usize) -> &Token {
         &self.toks[self.tok_index + n]
     }
-
     fn advance(&mut self) -> &Token {
         if self.tok_index >= self.toks.len() {
             panic!("Unexpected end of file");
@@ -641,108 +783,43 @@ impl<'a> Parser<'a> {
         tok
     }
 
+    fn get_number(&mut self) -> i64 {
+        if let TokenKind::Num(val) = self.peek().kind {
+            self.advance();
+            return val;
+        }
+        self.error_tok(self.peek(), "expected a number");
+    }
+
     fn tok_source(&self, tok: &Token) -> &[u8] {
         &self.src[tok.offset..(tok.offset + tok.length)]
     }
 
-    fn r#match(&self, s: &str) -> bool {
+    fn peek_is(&self, s: &str) -> bool {
         self.tok_source(self.peek()).eq(s.as_bytes())
     }
 
-    fn match_ahead(&self, n: usize, s: &str) -> bool {
-        self.tok_source(self.peek_n(n)).eq(s.as_bytes())
+    fn la_is(&self, n: usize, s: &str) -> bool {
+        self.tok_source(self.la(n)).eq(s.as_bytes())
     }
 
     fn skip(&mut self, s: &str) -> &Token {
-        if !self.r#match(s) {
+        if !self.peek_is(s) {
             self.error_tok(self.peek(), &format!("Expected {}", s));
         }
         self.advance()
     }
 
     fn is_done(&self) -> bool {
-        matches!(self.peek().kind, TokenKind::Eof)
+        match self.peek().kind {
+            TokenKind::Eof => true,
+            _ => false,
+        }
     }
 
     pub fn ensure_done(&self) {
         if !self.is_done() {
             self.error_tok(self.peek(), "extra token")
-        }
-    }
-
-    fn add_overload(&self, lhs: P<ExprNode>, rhs: P<ExprNode>, offset: usize) -> ExprNode {
-        let mut lhs = lhs;
-        let mut rhs = rhs;
-
-        if let Type::Int = lhs.r#type {
-            if let Type::Ptr(_) = rhs.r#type {
-                std::mem::swap(&mut lhs, &mut rhs);
-            }
-        }
-
-        match (&lhs.r#type, &rhs.r#type) {
-            (Type::Int, Type::Int) => ExprNode {
-                kind: ExprKind::Add(lhs, rhs),
-                offset,
-                r#type: Type::Int,
-            },
-            (Type::Ptr(_), Type::Int) => {
-                let rhs = P::new(ExprNode {
-                    kind: ExprKind::Mul(
-                        P::new(ExprNode {
-                            kind: ExprKind::Num(8),
-                            offset,
-                            r#type: Type::Int,
-                        }),
-                        rhs,
-                    ),
-                    offset,
-                    r#type: Type::Int,
-                });
-                let r#type = lhs.r#type.clone();
-                ExprNode {
-                    kind: ExprKind::Add(lhs, rhs),
-                    offset,
-                    r#type,
-                }
-            }
-            _ => self.error_at(offset, "invalid operands"),
-        }
-    }
-
-    fn sub_overload(&self, lhs: P<ExprNode>, rhs: P<ExprNode>, offset: usize) -> ExprNode {
-        match (&lhs.r#type, &rhs.r#type) {
-            (Type::Int, Type::Int) => ExprNode {
-                kind: ExprKind::Sub(lhs, rhs),
-                offset,
-                r#type: Type::Int,
-            },
-            (Type::Ptr(_), Type::Int) => {
-                let rhs = P::new(ExprNode {
-                    kind: ExprKind::Mul(synth_num(8, offset), rhs),
-                    offset,
-                    r#type: Type::Int,
-                });
-                let r#type = lhs.r#type.clone();
-                ExprNode {
-                    kind: ExprKind::Sub(lhs, rhs),
-                    offset,
-                    r#type,
-                }
-            }
-            (Type::Ptr(_), Type::Ptr(_)) => {
-                let node = P::new(ExprNode {
-                    kind: ExprKind::Sub(lhs, rhs),
-                    offset,
-                    r#type: Type::Int,
-                });
-                ExprNode {
-                    kind: ExprKind::Div(node, synth_num(8, offset)),
-                    offset,
-                    r#type: Type::Int,
-                }
-            }
-            _ => self.error_at(offset, "invalid operands"),
         }
     }
 }
@@ -751,6 +828,6 @@ fn synth_num(v: i64, offset: usize) -> P<ExprNode> {
     P::new(ExprNode {
         kind: ExprKind::Num(v),
         offset,
-        r#type: Type::Int,
+        r#type: Type::int(),
     })
 }
