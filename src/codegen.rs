@@ -1,21 +1,16 @@
 use crate::errors::ErrorReporting;
-use crate::parser::{ExprKind, ExprNode, StmtKind, StmtNode, TopLevelKind, TopLevelNode};
+use crate::parser::{DeclKind, DeclNode, ExprKind, ExprNode, SourceUnit, StmtKind, StmtNode};
 
 const ARG_REGS: [&str; 6] = ["%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"];
 
-fn update_stack_info(node: &mut TopLevelNode) {
+fn update_stack_info(node: &mut DeclNode) {
     match node.kind {
-        TopLevelKind::SourceUnit(ref mut locals, _, ref mut stack_size) => {
+        DeclKind::Function(_, ref mut locals, _, ref mut stack_size) => {
             let mut offset = 0;
             for local in locals {
                 offset -= 8;
                 let mut local = local.borrow_mut();
                 local.stack_offset = offset;
-                println!(
-                    "# Var {} offset {}",
-                    String::from_utf8_lossy(&local.name),
-                    local.stack_offset
-                );
             }
             *stack_size = align_to(-offset, 16);
         }
@@ -25,8 +20,9 @@ fn update_stack_info(node: &mut TopLevelNode) {
 pub struct Codegen<'a> {
     src: &'a [u8],
     depth: i64,
-    top_node: &'a TopLevelNode<'a>,
+    source_unit: SourceUnit,
     id_count: usize,
+    curr_fn: Option<DeclNode>,
 }
 
 impl<'a> ErrorReporting for Codegen<'a> {
@@ -36,37 +32,51 @@ impl<'a> ErrorReporting for Codegen<'a> {
 }
 
 impl<'a> Codegen<'a> {
-    pub fn new(src: &'a [u8], node: &'a mut TopLevelNode) -> Self {
-        update_stack_info(node);
+    pub fn new(src: &'a [u8], mut source_unit: SourceUnit) -> Self {
+        for decl in source_unit.iter_mut() {
+            update_stack_info(decl);
+        }
         Self {
             src,
             depth: 0,
-            top_node: node,
             id_count: 0,
+            source_unit,
+            curr_fn: None,
         }
     }
 
     pub fn program(&mut self) {
-        match self.top_node.kind {
-            TopLevelKind::SourceUnit(_, ref body, stack_size) => {
-                println!("  .globl main");
-                println!("main:");
+        for decl in self.source_unit.clone() {
+            match decl.kind {
+                DeclKind::Function(ref name, ref locals, ref body, stack_size) => {
+                    self.curr_fn = Some(decl.clone());
+                    let name = String::from_utf8_lossy(name);
 
-                // Prologue
-                println!("  push %rbp");
-                println!("  mov %rsp, %rbp");
-                println!("  sub ${}, %rsp", stack_size);
-                println!();
+                    println!("  .globl {}", name);
+                    for local in locals {
+                        let local = local.borrow();
+                        println!(
+                            "# var {} offset {}",
+                            String::from_utf8_lossy(&local.name),
+                            local.stack_offset
+                        );
+                    }
+                    println!("{}:", name);
 
-                for stmt in body {
-                    self.stmt(stmt)
+                    // Prologue
+                    println!("  push %rbp");
+                    println!("  mov %rsp, %rbp");
+                    println!("  sub ${}, %rsp", stack_size);
+                    println!();
+
+                    self.stmt(body);
+
+                    println!();
+                    println!(".L.return.{}:", name);
+                    println!("  mov %rbp, %rsp");
+                    println!("  pop %rbp");
+                    println!("  ret");
                 }
-
-                println!();
-                println!(".L.return:");
-                println!("  mov %rbp, %rsp");
-                println!("  pop %rbp");
-                println!("  ret");
             }
         }
     }
@@ -76,7 +86,8 @@ impl<'a> Codegen<'a> {
             StmtKind::Expr(ref expr) => self.expr(expr),
             StmtKind::Return(ref expr) => {
                 self.expr(expr);
-                println!("  jmp .L.return");
+                let DeclKind::Function(ref name, _, _, _) = &self.curr_fn.as_ref().unwrap().kind;
+                println!("  jmp .L.return.{}", String::from_utf8_lossy(name));
             }
             StmtKind::Block(ref stmts) => {
                 for stmt in stmts {

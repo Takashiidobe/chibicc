@@ -3,12 +3,12 @@ extern crate lazy_static;
 
 use std::env;
 
-use crate::{lexer::Lexer, parser::Parser, codegen::Codegen};
+use crate::{codegen::Codegen, lexer::Lexer, parser::Parser};
 
+pub mod codegen;
 pub mod errors;
 pub mod lexer;
 pub mod parser;
-pub mod codegen;
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -24,10 +24,10 @@ fn main() {
 
     let mut parser = Parser::new(src, &toks);
 
-    let mut node = parser.source_unit();
+    let source_unit = parser.source_unit();
     parser.ensure_done();
 
-    let mut codegen = Codegen::new(src, &mut node);
+    let mut codegen = Codegen::new(src, source_unit);
     codegen.program();
     codegen.sanity_checks();
 }

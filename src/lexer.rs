@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use crate::errors::ErrorReporting;
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum TokenKind {
     Punct,
     Ident,
@@ -11,7 +11,7 @@ pub enum TokenKind {
     Eof,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Token {
     pub offset: usize,
     pub length: usize,
