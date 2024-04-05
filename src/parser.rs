@@ -13,7 +13,7 @@ pub enum Type {
     Int,
     Ptr(P<Type>),
     Unit,
-    Fn(P<Type>),
+    Fn(P<Type>, Vec<Type>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -69,14 +69,20 @@ pub enum StmtKind {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum DeclKind {
-    Function(AsciiStr, Vec<SP<VarData>>, StmtNode, i64),
+pub enum TopDeclKind {
+    Function {
+        name: AsciiStr,
+        params: Vec<SP<VarData>>,
+        locals: Vec<SP<VarData>>,
+        body: StmtNode,
+        stack_size: i64,
+    },
 }
 
 pub type ExprNode = Node<ExprKind>;
 pub type StmtNode = Node<StmtKind>;
-pub type DeclNode = Node<DeclKind>;
-pub type SourceUnit = Vec<DeclNode>;
+pub type TopDeclNode = Node<TopDeclKind>;
+pub type SourceUnit = Vec<TopDeclNode>;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Parser<'a> {
@@ -117,18 +123,27 @@ impl<'a> Parser<'a> {
         fns
     }
 
-    pub fn function(&mut self) -> DeclNode {
+    pub fn function(&mut self) -> TopDeclNode {
+        self.vars.clear();
+
         let offset = self.peek().offset;
 
         let r#type = self.declspec();
         let (r#type, name) = self.declarator(&r#type);
 
-        self.vars.clear();
+        let params = self.vars.clone();
+
         let body = self.compound_stmt();
         let mut locals = self.vars.clone();
         locals.reverse();
-        DeclNode {
-            kind: DeclKind::Function(name, locals, body, -1),
+        TopDeclNode {
+            kind: TopDeclKind::Function {
+                name,
+                params,
+                locals,
+                body,
+                stack_size: -1,
+            },
             offset,
             r#type,
         }
@@ -303,11 +318,26 @@ impl<'a> Parser<'a> {
             _ => self.error_tok(self.peek(), "expected a variable name"),
         }
     }
+
     fn type_suffix(&mut self, r#type: Type) -> Type {
         if self.r#match("(") {
+            let mut params = vec![];
             self.advance();
+            while !self.r#match(")") {
+                if !params.is_empty() {
+                    self.skip(",");
+                }
+                let base_type = self.declspec();
+                let (r#type, name) = self.declarator(&base_type);
+                params.push(r#type.clone());
+                self.vars.push(Rc::new(RefCell::new(VarData {
+                    name,
+                    r#type,
+                    stack_offset: -1,
+                })));
+            }
             self.skip(")");
-            return Type::Fn(P::new(r#type));
+            return Type::Fn(P::new(r#type), params);
         }
         r#type
     }
