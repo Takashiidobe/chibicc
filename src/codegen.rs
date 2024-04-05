@@ -42,6 +42,7 @@ impl<'a> Codegen<'a> {
 
         // Epilogue
         println!();
+        println!(".L.return:");
         println!("  mov %rbp, %rsp");
         println!("  pop %rbp");
 
@@ -77,30 +78,30 @@ impl<'a> Codegen<'a> {
         match node.kind {
             NodeKind::Num { val } => println!("  mov ${}, %rax", val),
             NodeKind::Add { ref lhs, ref rhs } => {
-                self.expr(rhs.as_ref());
+                self.expr(rhs);
                 self.push();
-                self.expr(lhs.as_ref());
+                self.expr(lhs);
                 self.pop("%rdi");
                 println!("  add %rdi, %rax");
             }
             NodeKind::Sub { ref lhs, ref rhs } => {
-                self.expr(rhs.as_ref());
+                self.expr(rhs);
                 self.push();
-                self.expr(lhs.as_ref());
+                self.expr(lhs);
                 self.pop("%rdi");
                 println!("  sub %rdi, %rax");
             }
             NodeKind::Mul { ref lhs, ref rhs } => {
-                self.expr(rhs.as_ref());
+                self.expr(rhs);
                 self.push();
-                self.expr(lhs.as_ref());
+                self.expr(lhs);
                 self.pop("%rdi");
                 println!("  imul %rdi, %rax");
             }
             NodeKind::Div { ref lhs, ref rhs } => {
-                self.expr(rhs.as_ref());
+                self.expr(rhs);
                 self.push();
-                self.expr(lhs.as_ref());
+                self.expr(lhs);
                 self.pop("%rdi");
                 println!("  cqo");
                 println!("  idiv %rdi, %rax");
@@ -110,42 +111,44 @@ impl<'a> Codegen<'a> {
                 println!("  neg %rax");
             }
             NodeKind::Eq { ref lhs, ref rhs } => {
-                self.expr(rhs.as_ref());
+                self.expr(rhs);
                 self.push();
-                self.expr(lhs.as_ref());
+                self.expr(lhs);
                 self.pop("%rdi");
                 println!("  cmp %rdi, %rax");
                 println!("  sete %al");
                 println!("  movzb %al, %rax");
             }
             NodeKind::Ne { ref lhs, ref rhs } => {
-                self.expr(rhs.as_ref());
+                self.expr(rhs);
                 self.push();
-                self.expr(lhs.as_ref());
+                self.expr(lhs);
                 self.pop("%rdi");
                 println!("  cmp %rdi, %rax");
                 println!("  setne %al");
                 println!("  movzb %al, %rax");
             }
             NodeKind::Le { ref lhs, ref rhs } => {
-                self.expr(rhs.as_ref());
+                self.expr(rhs);
                 self.push();
-                self.expr(lhs.as_ref());
+                self.expr(lhs);
                 self.pop("%rdi");
                 println!("  cmp %rdi, %rax");
                 println!("  setle %al");
                 println!("  movzb %al, %rax");
             }
             NodeKind::Lt { ref lhs, ref rhs } => {
-                self.expr(rhs.as_ref());
+                self.expr(rhs);
                 self.push();
-                self.expr(lhs.as_ref());
+                self.expr(lhs);
                 self.pop("%rdi");
                 println!("  cmp %rdi, %rax");
                 println!("  setl %al");
                 println!("  movzb %al, %rax");
             }
-            NodeKind::ExprStmt { .. } => {}
+            NodeKind::ExprStmt { ref lhs, .. } => {
+                self.expr(lhs);
+            }
             NodeKind::Var { .. } => {
                 self.addr(node);
                 println!("  mov (%rax), %rax");
@@ -156,6 +159,10 @@ impl<'a> Codegen<'a> {
                 self.expr(rhs);
                 self.pop("%rdi");
                 println!("  mov %rax, (%rdi)");
+            }
+            NodeKind::Return { ref lhs } => {
+                self.expr(lhs);
+                println!("  jmp .L.return");
             }
         };
     }

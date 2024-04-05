@@ -47,8 +47,18 @@ impl<'a> Parser<'a> {
         self.assign()
     }
 
-    // stmt = expr-stmt
+    // stmt = "return expr ";"
+    //      | expr-stmt
     fn stmt(&mut self) -> Node {
+        if self.r#match("return") {
+            self.advance();
+            let node = self.expr();
+            self.skip(";");
+
+            return Node {
+                kind: NodeKind::Return { lhs: P::new(node) },
+            };
+        }
         self.expr_stmt()
     }
 

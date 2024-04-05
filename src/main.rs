@@ -16,7 +16,6 @@ fn main() {
     let toks = lexer.tokenize();
 
     let mut parser = Parser::new(src, &toks);
-
     let (nodes, vars) = parser.parse();
     parser.ensure_done();
 

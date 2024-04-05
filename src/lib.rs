@@ -3,7 +3,13 @@ pub enum TokenKind {
     Punct,
     Num { val: i32 },
     Ident { name: String },
+    Keyword { keyword: Keyword },
     Eof,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Keyword {
+    Return,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -39,6 +45,9 @@ pub enum NodeKind {
     // Variables
     Assign { lhs: P<Node>, rhs: P<Node> },
     Var { name: String },
+
+    // Return
+    Return { lhs: P<Node> },
 }
 
 #[derive(Debug, Clone, PartialEq)]

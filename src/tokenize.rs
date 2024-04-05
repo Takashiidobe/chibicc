@@ -1,4 +1,5 @@
 use crate::ErrorReporting;
+use crate::Keyword;
 use crate::Token;
 use crate::TokenKind;
 
@@ -102,18 +103,29 @@ impl<'a> Lexer<'a> {
                 let start = self.index;
                 let mut var = vec![c];
                 self.index += 1;
-                while self.peek().is_some_and(|c| c.is_ascii_alphabetic()) {
+                while self.peek().is_some_and(|c| {
+                    c.is_ascii_alphabetic() || c.is_ascii_alphanumeric() || c == b'_'
+                }) {
                     var.push(self.peek().unwrap());
                     self.index += 1;
                 }
 
-                toks.push(Token {
+                let keyword_or_ident = String::from_utf8_lossy(&var).to_string();
+                let mut token = Token {
                     offset: start,
                     length: var.len(),
                     kind: TokenKind::Ident {
-                        name: String::from_utf8_lossy(&var).to_string(),
+                        name: keyword_or_ident.clone(),
                     },
-                });
+                };
+
+                if keyword_or_ident == "return" {
+                    token.kind = TokenKind::Keyword {
+                        keyword: Keyword::Return,
+                    }
+                }
+
+                toks.push(token);
             } else {
                 dbg!(String::from_utf8_lossy(&self.src[self.index..]));
                 self.error_at(self.index, "invalid token")
@@ -125,6 +137,7 @@ impl<'a> Lexer<'a> {
             length: 0,
             kind: TokenKind::Eof,
         });
+
         toks
     }
 }
