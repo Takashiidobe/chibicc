@@ -25,6 +25,7 @@ pub struct Node<Kind> {
 #[derive(Debug)]
 pub struct VarData {
     pub name: AsciiStr,
+    pub r#type: Type,
     pub stack_offset: i64,
 }
 
@@ -103,9 +104,7 @@ impl<'a> Parser<'a> {
     pub fn source_unit(&mut self) -> TopLevelNode {
         let mut stmts = Vec::new();
         let offset = self.peek().offset;
-        while !self.is_done() {
-            stmts.push(self.stmt())
-        }
+        stmts.push(self.compound_stmt());
 
         // Reverse them to keep the locals layout in line with chibicc
         let locals = self.vars.clone().into_iter().rev().collect();
@@ -198,18 +197,91 @@ impl<'a> Parser<'a> {
         self.expr_stmt()
     }
 
-    // compound_stmt = "{" stmt+ "}
+    // compound_stmt = "{" (declaration | stmt)* "}
     fn compound_stmt(&mut self) -> StmtNode {
         let offset = self.skip("{").offset;
         let mut stmts = Vec::new();
         while !self.r#match("}") {
-            stmts.push(self.stmt());
+            if self.r#match("int") {
+                self.declaration(&mut stmts);
+            } else {
+                stmts.push(self.stmt());
+            }
         }
         self.advance();
         StmtNode {
             kind: StmtKind::Block(stmts),
             offset,
             r#type: Type::Unit,
+        }
+    }
+
+    // declaration = declspec (declarator ("=" expr)? ("," declarator ("=" expr)?)*)? ";"
+    fn declaration(&mut self, stmts: &mut Vec<StmtNode>) {
+        let base_type = self.declspec();
+
+        let mut count = 0;
+        while !self.r#match(";") {
+            if count > 0 {
+                self.skip(",");
+            }
+            count += 1;
+
+            let offset = self.peek().offset;
+            let (r#type, name) = self.declarator(&base_type);
+            let var_data = Rc::new(RefCell::new(VarData {
+                name,
+                r#type: r#type.clone(),
+                stack_offset: -1,
+            }));
+            self.vars.push(var_data.clone());
+
+            if !self.r#match("=") {
+                continue;
+            }
+
+            self.advance();
+            let lhs = ExprNode {
+                kind: ExprKind::Var(var_data),
+                offset,
+                r#type,
+            };
+            let rhs = self.assign();
+            let rhs_type = rhs.r#type.clone();
+
+            stmts.push(StmtNode {
+                kind: StmtKind::Expr(ExprNode {
+                    kind: ExprKind::Assign(P::new(lhs), P::new(rhs)),
+                    offset,
+                    r#type: rhs_type,
+                }),
+                offset,
+                r#type: Type::Unit,
+            });
+        }
+    }
+
+    // declspec = "int"
+    fn declspec(&mut self) -> Type {
+        self.skip("int");
+        Type::Int
+    }
+
+    // declarator = "*"* ident
+    fn declarator(&mut self, base_type: &Type) -> (Type, AsciiStr) {
+        let mut r#type = base_type.clone();
+        while self.r#match("*") {
+            self.advance();
+            r#type = Type::Ptr(P::new(r#type));
+        }
+
+        match self.peek().kind {
+            TokenKind::Ident => {
+                let name = self.tok_source(self.peek()).to_owned();
+                self.advance();
+                (r#type, name)
+            }
+            _ => self.error_tok(self.peek(), "expected a variable name"),
         }
     }
 
@@ -440,23 +512,17 @@ impl<'a> Parser<'a> {
                 let tok = self.peek();
                 let offset = tok.offset;
                 let name = self.tok_source(tok).to_owned();
-                let var_data = match self.vars.iter().find(|v| v.borrow().name == name) {
-                    Some(var_data) => var_data,
-                    None => {
-                        self.vars.push(Rc::new(RefCell::new(VarData {
-                            name,
-                            stack_offset: -1,
-                        })));
-                        self.vars.last().unwrap()
-                    }
-                };
-                let expr = ExprNode {
-                    kind: ExprKind::Var(var_data.clone()),
-                    offset,
-                    r#type: Type::Int,
-                };
-                self.advance();
-                return expr;
+                let var_data = self.vars.iter().find(|v| v.borrow().name == name);
+                if let Some(var_data) = var_data {
+                    let expr = ExprNode {
+                        kind: ExprKind::Var(var_data.clone()),
+                        offset,
+                        r#type: Type::Int,
+                    };
+                    self.advance();
+                    return expr;
+                }
+                self.error_at(offset, "undefined variable");
             }
             TokenKind::Punct => {
                 if self.r#match("(") {

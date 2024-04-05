@@ -20,7 +20,7 @@ pub struct Token {
 
 lazy_static! {
     static ref KEYWORDS: HashSet<&'static [u8]> = {
-        ["return", "if", "else", "for", "while"]
+        ["return", "if", "else", "for", "while", "int"]
             .map(|k| k.as_bytes())
             .into()
     };
@@ -123,7 +123,19 @@ fn read_int(buf: &[u8]) -> (i64, usize) {
 fn ispunct(c: u8) -> bool {
     matches!(
         c,
-        b';' | b'=' | b'{' | b'}' | b'+' | b'-' | b'*' | b'/' | b'(' | b')' | b'<' | b'>' | b'&'
+        b';' | b'='
+            | b'{'
+            | b'}'
+            | b'+'
+            | b'-'
+            | b'*'
+            | b'/'
+            | b'('
+            | b')'
+            | b'<'
+            | b'>'
+            | b'&'
+            | b','
     )
 }
 
