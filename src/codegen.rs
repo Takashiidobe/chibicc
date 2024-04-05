@@ -1,15 +1,30 @@
-use std::collections::HashMap;
+use crate::errors::ErrorReporting;
+use crate::parser::{ExprKind, ExprNode, StmtKind, StmtNode, TopLevelKind, TopLevelNode};
 
-use crate::ErrorReporting;
-use crate::Node;
-use crate::NodeKind;
+fn update_stack_info(node: &mut TopLevelNode) {
+    match node.kind {
+        TopLevelKind::SourceUnit(ref mut locals, _, ref mut stack_size) => {
+            let mut offset = 0;
+            for local in locals {
+                offset -= 8;
+                let mut local = local.borrow_mut();
+                local.stack_offset = offset;
+                println!(
+                    "# Var {} offset {}",
+                    String::from_utf8_lossy(&local.name),
+                    local.stack_offset
+                );
+            }
+            *stack_size = align_to(-offset, 16);
+        }
+    }
+}
 
-#[derive(Debug, Clone, PartialEq)]
 pub struct Codegen<'a> {
-    pub src: &'a [u8],
-    pub depth: i64,
-    pub vars: HashMap<String, usize>,
-    pub count: i64,
+    src: &'a [u8],
+    depth: i64,
+    top_node: &'a TopLevelNode<'a>,
+    id_count: usize,
 }
 
 impl<'a> ErrorReporting for Codegen<'a> {
@@ -19,34 +34,85 @@ impl<'a> ErrorReporting for Codegen<'a> {
 }
 
 impl<'a> Codegen<'a> {
-    pub fn new(src: &'a [u8], vars: HashMap<String, usize>) -> Self {
+    pub fn new(src: &'a [u8], node: &'a mut TopLevelNode) -> Self {
+        update_stack_info(node);
         Self {
             src,
             depth: 0,
-            count: 0,
-            vars,
+            top_node: node,
+            id_count: 0,
         }
     }
 
-    pub fn program(&mut self, node: &Node) {
-        println!("  .globl main");
-        println!("main:");
+    pub fn program(&mut self) {
+        match self.top_node.kind {
+            TopLevelKind::SourceUnit(_, ref body, stack_size) => {
+                println!("  .globl main");
+                println!("main:");
 
-        // Prologue
-        println!("  push %rbp");
-        println!("  mov %rsp, %rbp");
-        println!("  sub ${}, %rsp", self.vars.len() * 8);
-        println!();
+                // Prologue
+                println!("  push %rbp");
+                println!("  mov %rsp, %rbp");
+                println!("  sub ${}, %rsp", stack_size);
+                println!();
 
-        self.stmt(node);
+                for stmt in body {
+                    self.stmt(stmt)
+                }
 
-        // Epilogue
-        println!();
-        println!(".L.return:");
-        println!("  mov %rbp, %rsp");
-        println!("  pop %rbp");
+                println!();
+                println!(".L.return:");
+                println!("  mov %rbp, %rsp");
+                println!("  pop %rbp");
+                println!("  ret");
+            }
+        }
+    }
 
-        println!("  ret");
+    fn stmt(&mut self, node: &StmtNode) {
+        match node.kind {
+            StmtKind::Expr(ref expr) => self.expr(expr),
+            StmtKind::Return(ref expr) => {
+                self.expr(expr);
+                println!("  jmp .L.return");
+            }
+            StmtKind::Block(ref stmts) => {
+                for stmt in stmts {
+                    self.stmt(stmt)
+                }
+            }
+            StmtKind::If(ref cond, ref then_stmt, ref else_stmt) => {
+                let id = self.next_id();
+                self.expr(cond);
+                println!("  cmp $0, %rax");
+                println!("  je .L.else.{}", id);
+                self.stmt(then_stmt);
+                println!("  jmp .L.end.{}", id);
+                println!(".L.else.{}:", id);
+                if let Some(else_stmt) = else_stmt {
+                    self.stmt(else_stmt);
+                }
+                println!(".L.end.{}:", id);
+            }
+            StmtKind::For(ref init, ref cond, ref inc, ref body) => {
+                let id = self.next_id();
+                if let Some(init) = init {
+                    self.stmt(init);
+                }
+                println!(".L.begin.{}:", id);
+                if let Some(cond) = cond {
+                    self.expr(cond);
+                    println!("  cmp $0, %rax");
+                    println!("  je .L.end.{}", id);
+                }
+                self.stmt(body);
+                if let Some(inc) = inc {
+                    self.expr(inc);
+                }
+                println!("  jmp .L.begin.{}", id);
+                println!(".L.end.{}:", id);
+            }
+        }
     }
 
     fn push(&mut self) {
@@ -59,52 +125,53 @@ impl<'a> Codegen<'a> {
         self.depth -= 1;
     }
 
-    fn count(&mut self) -> i64 {
-        let count = self.count;
-        self.count += 1;
-        count
-    }
-
-    fn stmt(&mut self, node: &Node) {
-        self.expr(node);
-    }
-
-    fn addr(&mut self, node: &Node) {
+    fn expr(&mut self, node: &ExprNode) {
         match node.kind {
-            NodeKind::Var { ref name } => {
-                // can't fail, otherwise its a reference error.
-                let offset = *self.vars.get(name).unwrap();
-                println!("  lea -{}(%rbp), %rax", offset);
+            ExprKind::Num(val) => println!("  mov ${}, %rax", val),
+            ExprKind::Neg(ref expr) => {
+                self.expr(expr);
+                println!("  neg %rax");
             }
-            _ => self.error_tok(&node.token, "not an lvalue"),
-        }
-    }
-
-    fn expr(&mut self, node: &Node) {
-        match node.kind {
-            NodeKind::Num { val } => println!("  mov ${}, %rax", val),
-            NodeKind::Add { ref lhs, ref rhs } => {
+            ExprKind::Var(_) => {
+                self.addr(node);
+                println!("  mov (%rax), %rax");
+            }
+            ExprKind::Addr(ref expr) => {
+                self.addr(expr);
+            }
+            ExprKind::Deref(ref expr) => {
+                self.expr(expr);
+                println!("  mov (%rax), %rax");
+            }
+            ExprKind::Assign(ref lhs, ref rhs) => {
+                self.addr(lhs);
+                self.push();
+                self.expr(rhs);
+                self.pop("%rdi");
+                println!("  mov %rax, (%rdi)");
+            }
+            ExprKind::Add(ref lhs, ref rhs) => {
                 self.expr(rhs);
                 self.push();
                 self.expr(lhs);
                 self.pop("%rdi");
                 println!("  add %rdi, %rax");
             }
-            NodeKind::Sub { ref lhs, ref rhs } => {
+            ExprKind::Sub(ref lhs, ref rhs) => {
                 self.expr(rhs);
                 self.push();
                 self.expr(lhs);
                 self.pop("%rdi");
                 println!("  sub %rdi, %rax");
             }
-            NodeKind::Mul { ref lhs, ref rhs } => {
+            ExprKind::Mul(ref lhs, ref rhs) => {
                 self.expr(rhs);
                 self.push();
                 self.expr(lhs);
                 self.pop("%rdi");
                 println!("  imul %rdi, %rax");
             }
-            NodeKind::Div { ref lhs, ref rhs } => {
+            ExprKind::Div(ref lhs, ref rhs) => {
                 self.expr(rhs);
                 self.push();
                 self.expr(lhs);
@@ -112,11 +179,7 @@ impl<'a> Codegen<'a> {
                 println!("  cqo");
                 println!("  idiv %rdi, %rax");
             }
-            NodeKind::Neg { ref expr } => {
-                self.expr(expr);
-                println!("  neg %rax");
-            }
-            NodeKind::Eq { ref lhs, ref rhs } => {
+            ExprKind::Eq(ref lhs, ref rhs) => {
                 self.expr(rhs);
                 self.push();
                 self.expr(lhs);
@@ -125,7 +188,7 @@ impl<'a> Codegen<'a> {
                 println!("  sete %al");
                 println!("  movzb %al, %rax");
             }
-            NodeKind::Ne { ref lhs, ref rhs } => {
+            ExprKind::Ne(ref lhs, ref rhs) => {
                 self.expr(rhs);
                 self.push();
                 self.expr(lhs);
@@ -134,7 +197,7 @@ impl<'a> Codegen<'a> {
                 println!("  setne %al");
                 println!("  movzb %al, %rax");
             }
-            NodeKind::Le { ref lhs, ref rhs } => {
+            ExprKind::Le(ref lhs, ref rhs) => {
                 self.expr(rhs);
                 self.push();
                 self.expr(lhs);
@@ -143,7 +206,7 @@ impl<'a> Codegen<'a> {
                 println!("  setle %al");
                 println!("  movzb %al, %rax");
             }
-            NodeKind::Lt { ref lhs, ref rhs } => {
+            ExprKind::Lt(ref lhs, ref rhs) => {
                 self.expr(rhs);
                 self.push();
                 self.expr(lhs);
@@ -152,73 +215,33 @@ impl<'a> Codegen<'a> {
                 println!("  setl %al");
                 println!("  movzb %al, %rax");
             }
-            NodeKind::ExprStmt { ref lhs, .. } => {
-                self.expr(lhs);
-            }
-            NodeKind::Var { .. } => {
-                self.addr(node);
-                println!("  mov (%rax), %rax");
-            }
-            NodeKind::Assign { ref lhs, ref rhs } => {
-                self.addr(lhs);
-                self.push();
-                self.expr(rhs);
-                self.pop("%rdi");
-                println!("  mov %rax, (%rdi)");
-            }
-            NodeKind::Return { ref lhs } => {
-                self.expr(lhs);
-                println!("  jmp .L.return");
-            }
-            NodeKind::Block { ref body } => {
-                for node in body {
-                    self.stmt(node);
-                }
-            }
-            NodeKind::If {
-                ref cond,
-                ref then,
-                ref r#else,
-            } => {
-                let c = self.count();
-
-                self.expr(cond);
-                println!("  cmp $0, %rax");
-                println!("  je  .L.else.{}", c);
-
-                self.stmt(then);
-                println!("  jmp .L.end.{}", c);
-                println!(".L.else.{}:", c);
-
-                if let Some(else_branch) = r#else {
-                    self.stmt(else_branch);
-                }
-                println!(".L.end.{}:", c);
-            }
-            NodeKind::For {
-                ref init,
-                ref cond,
-                ref then,
-                ref inc,
-            } => {
-                let c = self.count();
-
-                if let Some(init) = init {
-                    self.stmt(init);
-                }
-                println!(".L.begin.{}:", c);
-                if let Some(cond) = cond {
-                    self.expr(cond);
-                    println!("  cmp $0, %rax");
-                    println!("  je  .L.end.{}", c);
-                }
-                self.stmt(then);
-                if let Some(inc) = inc {
-                    self.expr(inc);
-                }
-                println!("  jmp .L.begin.{}", c);
-                println!(".L.end.{}:", c);
-            }
         };
     }
+
+    fn addr(&mut self, expr: &ExprNode) {
+        match expr.kind {
+            ExprKind::Var(ref data) => {
+                println!("  lea {}(%rbp), %rax", &data.borrow().stack_offset);
+            }
+            ExprKind::Deref(ref expr) => {
+                self.expr(expr);
+            }
+            _ => self.error_at(expr.offset, "not an lvalue"),
+        };
+    }
+
+    fn next_id(&mut self) -> usize {
+        self.id_count += 1;
+        self.id_count
+    }
+
+    pub fn sanity_checks(&self) {
+        if self.depth != 0 {
+            panic!("depth is not 0");
+        }
+    }
+}
+
+fn align_to(n: i64, align: i64) -> i64 {
+    ((n + align - 1) / align) * align
 }
