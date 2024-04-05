@@ -37,7 +37,7 @@ pub enum ExprKind {
     Addr(P<ExprNode>),
     Deref(P<ExprNode>),
 
-    Funcall(AsciiStr),
+    Funcall(AsciiStr, Vec<ExprNode>),
 
     Add(P<ExprNode>, P<ExprNode>),
     Sub(P<ExprNode>, P<ExprNode>),
@@ -512,21 +512,14 @@ impl<'a> Parser<'a> {
                 };
             }
             TokenKind::Ident => {
+                if self.match_ahead(1, "(") {
+                    return self.funcall();
+                }
+
                 let tok = self.peek();
                 let offset = tok.offset;
                 let name = self.tok_source(tok).to_owned();
                 self.advance();
-
-                if self.r#match("(") {
-                    self.advance();
-                    let node = ExprNode {
-                        kind: ExprKind::Funcall(name),
-                        offset,
-                        r#type: Type::Int,
-                    };
-                    self.skip(")");
-                    return node;
-                }
 
                 let var_data = self.vars.iter().find(|v| v.borrow().name == name);
                 if let Some(var_data) = var_data {
@@ -552,9 +545,38 @@ impl<'a> Parser<'a> {
         self.error_tok(self.peek(), "expected an expression");
     }
 
+    // funcall = ident "(" (assign ("," assign)*? ")"
+    fn funcall(&mut self) -> ExprNode {
+        let tok = self.peek();
+        let offset = tok.offset;
+        let fn_name = self.tok_source(tok).to_owned();
+        self.advance();
+
+        let mut args = vec![];
+        self.skip("(");
+        while !self.r#match(")") {
+            if !args.is_empty() {
+                self.skip(",");
+            }
+            args.push(self.assign());
+        }
+        self.skip(")");
+
+        ExprNode {
+            kind: ExprKind::Funcall(fn_name, args),
+            offset,
+            r#type: Type::Int,
+        }
+    }
+
     fn peek(&self) -> &Token {
         &self.toks[self.tok_index]
     }
+
+    fn peek_n(&self, n: usize) -> &Token {
+        &self.toks[self.tok_index + n]
+    }
+
     fn advance(&mut self) -> &Token {
         if self.tok_index >= self.toks.len() {
             panic!("Unexpected end of file");
@@ -570,6 +592,10 @@ impl<'a> Parser<'a> {
 
     fn r#match(&self, s: &str) -> bool {
         self.tok_source(self.peek()).eq(s.as_bytes())
+    }
+
+    fn match_ahead(&self, n: usize, s: &str) -> bool {
+        self.tok_source(self.peek_n(n)).eq(s.as_bytes())
     }
 
     fn skip(&mut self, s: &str) -> &Token {
