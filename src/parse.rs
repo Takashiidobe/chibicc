@@ -91,8 +91,14 @@ impl<'a> Parser<'a> {
         statements
     }
 
-    // expr-stmt = expr ";"
+    // expr-stmt = expr? ";"
     fn expr_stmt(&mut self) -> Node {
+        if self.r#match(";") {
+            self.advance();
+            return Node {
+                kind: NodeKind::Block { body: vec![] },
+            };
+        }
         let node = self.expr();
         self.skip(";");
         node
