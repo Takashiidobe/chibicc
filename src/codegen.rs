@@ -215,6 +215,10 @@ impl<'a> Codegen<'a> {
                 println!("  setl %al");
                 println!("  movzb %al, %rax");
             }
+            ExprKind::Funcall(ref name) => {
+                println!("  mov $0, %rax");
+                println!("  call {}", String::from_utf8_lossy(name));
+            }
         };
     }
 
