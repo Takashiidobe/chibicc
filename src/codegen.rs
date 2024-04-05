@@ -9,6 +9,7 @@ pub struct Codegen<'a> {
     pub src: &'a [u8],
     pub depth: i64,
     pub vars: HashMap<String, usize>,
+    pub count: i64,
 }
 
 impl<'a> ErrorReporting for Codegen<'a> {
@@ -22,6 +23,7 @@ impl<'a> Codegen<'a> {
         Self {
             src,
             depth: 0,
+            count: 0,
             vars,
         }
     }
@@ -166,6 +168,27 @@ impl<'a> Codegen<'a> {
                 for node in body {
                     self.stmt(node);
                 }
+            }
+            NodeKind::If {
+                ref cond,
+                ref then,
+                ref r#else,
+            } => {
+                let c = self.count;
+                self.count += 1;
+
+                self.expr(cond);
+                println!("  cmp $0, %rax");
+                println!("  je  .L.else.{}", c);
+
+                self.stmt(then);
+                println!("  jmp .L.end.{}", c);
+                println!(".L.else.{}:", c);
+
+                if let Some(else_branch) = r#else {
+                    self.stmt(else_branch);
+                }
+                println!(".L.end.{}:", c);
             }
         };
     }

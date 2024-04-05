@@ -10,6 +10,8 @@ pub enum TokenKind {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Keyword {
     Return,
+    If,
+    Else,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -24,33 +26,80 @@ type P<A> = Box<A>;
 #[derive(Debug, Clone, PartialEq)]
 pub enum NodeKind {
     // Primary
-    Num { val: i32 },
+    Num {
+        val: i32,
+    },
 
     // Binary
-    Add { lhs: P<Node>, rhs: P<Node> },
-    Sub { lhs: P<Node>, rhs: P<Node> },
-    Mul { lhs: P<Node>, rhs: P<Node> },
-    Div { lhs: P<Node>, rhs: P<Node> },
-    Eq { lhs: P<Node>, rhs: P<Node> },
-    Ne { lhs: P<Node>, rhs: P<Node> },
-    Lt { lhs: P<Node>, rhs: P<Node> },
-    Le { lhs: P<Node>, rhs: P<Node> },
+    Add {
+        lhs: P<Node>,
+        rhs: P<Node>,
+    },
+    Sub {
+        lhs: P<Node>,
+        rhs: P<Node>,
+    },
+    Mul {
+        lhs: P<Node>,
+        rhs: P<Node>,
+    },
+    Div {
+        lhs: P<Node>,
+        rhs: P<Node>,
+    },
+    Eq {
+        lhs: P<Node>,
+        rhs: P<Node>,
+    },
+    Ne {
+        lhs: P<Node>,
+        rhs: P<Node>,
+    },
+    Lt {
+        lhs: P<Node>,
+        rhs: P<Node>,
+    },
+    Le {
+        lhs: P<Node>,
+        rhs: P<Node>,
+    },
 
     // Unary
-    Neg { expr: P<Node> },
+    Neg {
+        expr: P<Node>,
+    },
 
     // Statement
-    ExprStmt { lhs: P<Node>, next: Option<P<Node>> },
+    ExprStmt {
+        lhs: P<Node>,
+        next: Option<P<Node>>,
+    },
 
     // Variables
-    Assign { lhs: P<Node>, rhs: P<Node> },
-    Var { name: String },
+    Assign {
+        lhs: P<Node>,
+        rhs: P<Node>,
+    },
+    Var {
+        name: String,
+    },
 
     // Return
-    Return { lhs: P<Node> },
+    Return {
+        lhs: P<Node>,
+    },
 
     // Block
-    Block { body: Vec<Node> },
+    Block {
+        body: Vec<Node>,
+    },
+
+    // If
+    If {
+        cond: P<Node>,
+        then: P<Node>,
+        r#else: Option<P<Node>>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]

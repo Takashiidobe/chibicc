@@ -137,6 +137,18 @@ impl<'a> Lexer<'a> {
                     }
                 }
 
+                if keyword_or_ident == "if" {
+                    token.kind = TokenKind::Keyword {
+                        keyword: Keyword::If,
+                    }
+                }
+
+                if keyword_or_ident == "else" {
+                    token.kind = TokenKind::Keyword {
+                        keyword: Keyword::Else,
+                    }
+                }
+
                 toks.push(token);
             } else {
                 dbg!(String::from_utf8_lossy(&self.src[self.index..]));
