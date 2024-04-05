@@ -8,10 +8,18 @@ pub type P<A> = Box<A>;
 pub type SP<A> = Rc<RefCell<A>>;
 pub type AsciiStr = Vec<u8>;
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum Type {
+    Int,
+    Ptr(P<Type>),
+    Unit,
+}
+
 #[derive(Debug)]
 pub struct Node<Kind> {
     pub kind: Kind,
     pub offset: usize,
+    pub r#type: Type,
 }
 
 #[derive(Debug)]
@@ -22,7 +30,7 @@ pub struct VarData {
 
 #[derive(Debug)]
 pub enum ExprKind {
-    Num(i32),
+    Num(i64),
     Var(SP<VarData>),
 
     Addr(P<ExprNode>),
@@ -104,6 +112,7 @@ impl<'a> Parser<'a> {
         TopLevelNode {
             kind: TopLevelKind::SourceUnit(locals, stmts, -1),
             offset,
+            r#type: Type::Unit,
         }
     }
 
@@ -114,46 +123,48 @@ impl<'a> Parser<'a> {
     //      | "{" compound-stmt
     //      | expr-stmt
     fn stmt(&mut self) -> StmtNode {
-        if self.tok_is("return") {
+        if self.r#match("return") {
             let offset = self.advance().offset;
             let expr = self.expr();
             self.skip(";");
             return StmtNode {
                 kind: StmtKind::Return(expr),
                 offset,
+                r#type: Type::Unit,
             };
         }
 
-        if self.tok_is("if") {
+        if self.r#match("if") {
             let offset = self.advance().offset;
             self.skip("(");
             let cond = P::new(self.expr());
             self.skip(")");
             let then_stmt = P::new(self.stmt());
             let mut else_stmt = None;
-            if self.tok_is("else") {
+            if self.r#match("else") {
                 self.advance();
                 else_stmt = Some(P::new(self.stmt()));
             }
             return StmtNode {
                 kind: StmtKind::If(cond, then_stmt, else_stmt),
                 offset,
+                r#type: Type::Unit,
             };
         }
 
-        if self.tok_is("for") {
+        if self.r#match("for") {
             let offset = self.advance().offset;
             self.skip("(");
             let init = Some(P::new(self.expr_stmt()));
 
             let mut cond = None;
-            if !self.tok_is(";") {
+            if !self.r#match(";") {
                 cond = Some(P::new(self.expr()));
             }
             self.skip(";");
 
             let mut inc = None;
-            if !self.tok_is(")") {
+            if !self.r#match(")") {
                 inc = Some(P::new(self.expr()));
             }
             self.skip(")");
@@ -163,10 +174,11 @@ impl<'a> Parser<'a> {
             return StmtNode {
                 kind: StmtKind::For(init, cond, inc, body),
                 offset,
+                r#type: Type::Unit,
             };
         }
 
-        if self.tok_is("while") {
+        if self.r#match("while") {
             let offset = self.advance().offset;
             self.skip("(");
             let cond = Some(P::new(self.expr()));
@@ -175,10 +187,11 @@ impl<'a> Parser<'a> {
             return StmtNode {
                 kind: StmtKind::For(None, cond, None, body),
                 offset,
+                r#type: Type::Unit,
             };
         }
 
-        if self.tok_is("{") {
+        if self.r#match("{") {
             return self.compound_stmt();
         }
 
@@ -189,23 +202,25 @@ impl<'a> Parser<'a> {
     fn compound_stmt(&mut self) -> StmtNode {
         let offset = self.skip("{").offset;
         let mut stmts = Vec::new();
-        while !self.tok_is("}") {
+        while !self.r#match("}") {
             stmts.push(self.stmt());
         }
         self.advance();
         StmtNode {
             kind: StmtKind::Block(stmts),
             offset,
+            r#type: Type::Unit,
         }
     }
 
     // expr-stmt = expr? ";"
     fn expr_stmt(&mut self) -> StmtNode {
-        if self.tok_is(";") {
+        if self.r#match(";") {
             let offset = self.advance().offset;
             return StmtNode {
                 kind: StmtKind::Block(Vec::new()),
                 offset,
+                r#type: Type::Unit,
             };
         }
 
@@ -215,6 +230,7 @@ impl<'a> Parser<'a> {
         StmtNode {
             kind: StmtKind::Expr(expr),
             offset,
+            r#type: Type::Unit,
         }
     }
 
@@ -226,11 +242,13 @@ impl<'a> Parser<'a> {
     // assign = equality ("=" assign)?
     fn assign(&mut self) -> ExprNode {
         let mut node = self.equality();
-        if self.tok_is("=") {
+        if self.r#match("=") {
             let offset = self.advance().offset;
+            let r#type = node.r#type.clone();
             node = ExprNode {
                 kind: ExprKind::Assign(P::new(node), P::new(self.assign())),
                 offset,
+                r#type,
             };
         }
         node
@@ -241,17 +259,19 @@ impl<'a> Parser<'a> {
         let mut node = self.relational();
 
         loop {
-            if self.tok_is("==") {
+            if self.r#match("==") {
                 let offset = self.advance().offset;
                 node = ExprNode {
                     kind: ExprKind::Eq(P::new(node), P::new(self.relational())),
                     offset,
+                    r#type: Type::Int,
                 };
-            } else if self.tok_is("!=") {
+            } else if self.r#match("!=") {
                 let offset = self.advance().offset;
                 node = ExprNode {
                     kind: ExprKind::Ne(P::new(node), P::new(self.relational())),
                     offset,
+                    r#type: Type::Int,
                 };
             } else {
                 break;
@@ -266,29 +286,33 @@ impl<'a> Parser<'a> {
         let mut node = self.add();
 
         loop {
-            if self.tok_is("<") {
+            if self.r#match("<") {
                 let offset = self.advance().offset;
                 node = ExprNode {
                     kind: ExprKind::Lt(P::new(node), P::new(self.add())),
                     offset,
+                    r#type: Type::Int,
                 };
-            } else if self.tok_is("<=") {
+            } else if self.r#match("<=") {
                 let offset = self.advance().offset;
                 node = ExprNode {
                     kind: ExprKind::Le(P::new(node), P::new(self.add())),
                     offset,
+                    r#type: Type::Int,
                 };
-            } else if self.tok_is(">") {
+            } else if self.r#match(">") {
                 let offset = self.advance().offset;
                 node = ExprNode {
                     kind: ExprKind::Lt(P::new(self.add()), P::new(node)),
                     offset,
+                    r#type: Type::Int,
                 };
-            } else if self.tok_is(">=") {
+            } else if self.r#match(">=") {
                 let offset = self.advance().offset;
                 node = ExprNode {
                     kind: ExprKind::Le(P::new(self.add()), P::new(node)),
                     offset,
+                    r#type: Type::Int,
                 };
             } else {
                 break;
@@ -303,18 +327,14 @@ impl<'a> Parser<'a> {
         let mut node = self.mul();
 
         loop {
-            if self.tok_is("+") {
+            if self.r#match("+") {
                 let offset = self.advance().offset;
-                node = ExprNode {
-                    kind: ExprKind::Add(P::new(node), P::new(self.mul())),
-                    offset,
-                };
-            } else if self.tok_is("-") {
+                let rhs = P::new(self.mul());
+                node = self.add_overload(P::new(node), rhs, offset);
+            } else if self.r#match("-") {
                 let offset = self.advance().offset;
-                node = ExprNode {
-                    kind: ExprKind::Sub(P::new(node), P::new(self.mul())),
-                    offset,
-                };
+                let rhs = P::new(self.mul());
+                node = self.sub_overload(P::new(node), rhs, offset);
             } else {
                 break;
             }
@@ -328,17 +348,21 @@ impl<'a> Parser<'a> {
         let mut node = self.unary();
 
         loop {
-            if self.tok_is("*") {
+            if self.r#match("*") {
                 let offset = self.advance().offset;
+                let r#type = node.r#type.clone();
                 node = ExprNode {
                     kind: ExprKind::Mul(P::new(node), P::new(self.unary())),
                     offset,
+                    r#type,
                 };
-            } else if self.tok_is("/") {
+            } else if self.r#match("/") {
                 let offset = self.advance().offset;
+                let r#type = node.r#type.clone();
                 node = ExprNode {
                     kind: ExprKind::Div(P::new(node), P::new(self.unary())),
                     offset,
+                    r#type,
                 };
             } else {
                 break;
@@ -351,32 +375,50 @@ impl<'a> Parser<'a> {
     // unary = ("+" | "-" | "*" | "&") unary
     //       | primary
     fn unary(&mut self) -> ExprNode {
-        if self.tok_is("+") {
+        if self.r#match("+") {
             self.advance();
             return self.unary();
         }
 
-        if self.tok_is("-") {
+        if self.r#match("-") {
             let offset = self.advance().offset;
+            let node = P::new(self.unary());
+            let r#type = node.r#type.clone();
+
             return ExprNode {
-                kind: ExprKind::Neg(P::new(self.unary())),
+                kind: ExprKind::Neg(node),
                 offset,
+                r#type,
             };
         }
 
-        if self.tok_is("&") {
+        if self.r#match("&") {
             let offset = self.advance().offset;
+            let node = P::new(self.unary());
+            let r#type = Type::Ptr(P::new(node.r#type.clone()));
+
             return ExprNode {
-                kind: ExprKind::Addr(P::new(self.unary())),
+                kind: ExprKind::Addr(node),
                 offset,
+                r#type,
             };
         }
 
-        if self.tok_is("*") {
+        if self.r#match("*") {
             let offset = self.advance().offset;
+
+            let node = P::new(self.unary());
+
+            let r#type = if let Type::Ptr(ref base) = node.r#type {
+                *base.clone()
+            } else {
+                Type::Int
+            };
+
             return ExprNode {
-                kind: ExprKind::Deref(P::new(self.unary())),
+                kind: ExprKind::Deref(node),
                 offset,
+                r#type,
             };
         }
 
@@ -391,6 +433,7 @@ impl<'a> Parser<'a> {
                 return ExprNode {
                     kind: ExprKind::Num(val),
                     offset,
+                    r#type: Type::Int,
                 };
             }
             TokenKind::Ident => {
@@ -410,12 +453,13 @@ impl<'a> Parser<'a> {
                 let expr = ExprNode {
                     kind: ExprKind::Var(var_data.clone()),
                     offset,
+                    r#type: Type::Int,
                 };
                 self.advance();
                 return expr;
             }
             TokenKind::Punct => {
-                if self.tok_is("(") {
+                if self.r#match("(") {
                     self.advance();
                     let node = self.expr();
                     self.skip(")");
@@ -443,12 +487,12 @@ impl<'a> Parser<'a> {
         &self.src[tok.offset..(tok.offset + tok.length)]
     }
 
-    fn tok_is(&self, s: &str) -> bool {
+    fn r#match(&self, s: &str) -> bool {
         self.tok_source(self.peek()).eq(s.as_bytes())
     }
 
     fn skip(&mut self, s: &str) -> &Token {
-        if !self.tok_is(s) {
+        if !self.r#match(s) {
             self.error_tok(self.peek(), &format!("Expected {}", s));
         }
         self.advance()
@@ -463,4 +507,88 @@ impl<'a> Parser<'a> {
             self.error_tok(self.peek(), "extra token")
         }
     }
+
+    fn add_overload(&self, lhs: P<ExprNode>, rhs: P<ExprNode>, offset: usize) -> ExprNode {
+        let mut lhs = lhs;
+        let mut rhs = rhs;
+
+        if let Type::Int = lhs.r#type {
+            if let Type::Ptr(_) = rhs.r#type {
+                std::mem::swap(&mut lhs, &mut rhs);
+            }
+        }
+
+        match (&lhs.r#type, &rhs.r#type) {
+            (Type::Int, Type::Int) => ExprNode {
+                kind: ExprKind::Add(lhs, rhs),
+                offset,
+                r#type: Type::Int,
+            },
+            (Type::Ptr(_), Type::Int) => {
+                let rhs = P::new(ExprNode {
+                    kind: ExprKind::Mul(
+                        P::new(ExprNode {
+                            kind: ExprKind::Num(8),
+                            offset,
+                            r#type: Type::Int,
+                        }),
+                        rhs,
+                    ),
+                    offset,
+                    r#type: Type::Int,
+                });
+                let r#type = lhs.r#type.clone();
+                ExprNode {
+                    kind: ExprKind::Add(lhs, rhs),
+                    offset,
+                    r#type,
+                }
+            }
+            _ => self.error_at(offset, "invalid operands"),
+        }
+    }
+
+    fn sub_overload(&self, lhs: P<ExprNode>, rhs: P<ExprNode>, offset: usize) -> ExprNode {
+        match (&lhs.r#type, &rhs.r#type) {
+            (Type::Int, Type::Int) => ExprNode {
+                kind: ExprKind::Sub(lhs, rhs),
+                offset,
+                r#type: Type::Int,
+            },
+            (Type::Ptr(_), Type::Int) => {
+                let rhs = P::new(ExprNode {
+                    kind: ExprKind::Mul(synth_num(8, offset), rhs),
+                    offset,
+                    r#type: Type::Int,
+                });
+                let r#type = lhs.r#type.clone();
+                ExprNode {
+                    kind: ExprKind::Sub(lhs, rhs),
+                    offset,
+                    r#type,
+                }
+            }
+            (Type::Ptr(_), Type::Ptr(_)) => {
+                let node = P::new(ExprNode {
+                    kind: ExprKind::Sub(lhs, rhs),
+                    offset,
+                    r#type: Type::Int,
+                });
+                ExprNode {
+                    kind: ExprKind::Div(node, synth_num(8, offset)),
+                    offset,
+                    r#type: Type::Int,
+                }
+            }
+            _ => self.error_at(offset, "invalid operands"),
+        }
+    }
+}
+
+fn synth_num(v: i64, offset: usize) -> P<ExprNode> {
+    P::new(ExprNode {
+        kind: ExprKind::Num(v),
+        offset,
+        r#type: Type::Int,
+    })
 }
