@@ -360,7 +360,7 @@ impl<'a> Parser<'a> {
     }
 
     // type-suffix = "(" func-params
-    //             | "[" num "]"
+    //             | "[" num "]" type-suffix
     //             | ε
     fn type_suffix(&mut self, r#type: Type) -> Type {
         if self.peek_is("(") {
@@ -371,6 +371,7 @@ impl<'a> Parser<'a> {
             self.advance();
             let len = self.get_number();
             self.skip("]");
+            let r#type = self.type_suffix(r#type);
             return Type::array(P::new(r#type), len.try_into().unwrap());
         }
         r#type
@@ -382,7 +383,7 @@ impl<'a> Parser<'a> {
         let mut params = Vec::new();
         self.advance();
         while !self.peek_is(")") {
-            if params.len() > 0 {
+            if !params.is_empty() {
                 self.skip(",");
             }
             let base_ty = self.declspec();
@@ -395,7 +396,7 @@ impl<'a> Parser<'a> {
             })));
         }
         self.skip(")");
-        return Type::func(P::new(r#type), params);
+        Type::func(P::new(r#type), params)
     }
 
     // expr-stmt = expr? ";"
@@ -538,9 +539,7 @@ impl<'a> Parser<'a> {
 
         if let TypeKind::Int = lhs.r#type.kind {
             if let TypeKind::Ptr(_) = rhs.r#type.kind {
-                let tmp = lhs;
-                lhs = rhs;
-                rhs = tmp;
+                std::mem::swap(&mut lhs, &mut rhs);
             }
         }
 
@@ -550,16 +549,9 @@ impl<'a> Parser<'a> {
                 offset,
                 r#type: Type::int(),
             },
-            (TypeKind::Ptr(_), TypeKind::Int) | (TypeKind::Array(_, _), TypeKind::Int) => {
+            (TypeKind::Ptr(bt), TypeKind::Int) | (TypeKind::Array(bt, _), TypeKind::Int) => {
                 let rhs = P::new(ExprNode {
-                    kind: ExprKind::Mul(
-                        P::new(ExprNode {
-                            kind: ExprKind::Num(8),
-                            offset,
-                            r#type: Type::int(),
-                        }),
-                        rhs,
-                    ),
+                    kind: ExprKind::Mul(synth_num(bt.size.try_into().unwrap(), offset), rhs),
                     offset,
                     r#type: Type::int(),
                 });
@@ -581,9 +573,9 @@ impl<'a> Parser<'a> {
                 offset,
                 r#type: Type::int(),
             },
-            (TypeKind::Ptr(_), TypeKind::Int) | (TypeKind::Array(_, _), TypeKind::Int) => {
+            (TypeKind::Ptr(bt), TypeKind::Int) | (TypeKind::Array(bt, _), TypeKind::Int) => {
                 let rhs = P::new(ExprNode {
-                    kind: ExprKind::Mul(synth_num(8, offset), rhs),
+                    kind: ExprKind::Mul(synth_num(bt.size.try_into().unwrap(), offset), rhs),
                     offset,
                     r#type: Type::int(),
                 });
@@ -595,17 +587,18 @@ impl<'a> Parser<'a> {
                 }
             }
             // TODO better way than combinatorial explosion?
-            (TypeKind::Ptr(_), TypeKind::Ptr(_))
-            | (TypeKind::Array(_, _), TypeKind::Ptr(_))
-            | (TypeKind::Ptr(_), TypeKind::Array(_, _))
-            | (TypeKind::Array(_, _), TypeKind::Array(_, _)) => {
+            (TypeKind::Ptr(bt), TypeKind::Ptr(_))
+            | (TypeKind::Array(bt, _), TypeKind::Ptr(_))
+            | (TypeKind::Ptr(bt), TypeKind::Array(_, _))
+            | (TypeKind::Array(bt, _), TypeKind::Array(_, _)) => {
+                let size: i64 = bt.size.try_into().unwrap();
                 let node = P::new(ExprNode {
                     kind: ExprKind::Sub(lhs, rhs),
                     offset,
                     r#type: Type::int(),
                 });
                 ExprNode {
-                    kind: ExprKind::Div(node, synth_num(8, offset)),
+                    kind: ExprKind::Div(node, synth_num(size, offset)),
                     offset,
                     r#type: Type::int(),
                 }
