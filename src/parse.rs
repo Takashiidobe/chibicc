@@ -34,12 +34,18 @@ impl<'a> Parser<'a> {
         }
     }
 
-    pub fn parse(&mut self) -> (Vec<Node>, HashMap<String, usize>) {
-        let mut statements = vec![];
-        while !self.is_done() {
-            statements.push(self.stmt());
+    pub fn parse(&mut self) -> (Node, HashMap<String, usize>) {
+        self.skip("{");
+        let block = self.compound_stmt();
+        if !self.is_done() {
+            panic!("Did not parse to the end");
         }
-        (statements, self.vars.clone())
+        (
+            Node {
+                kind: NodeKind::Block { body: block },
+            },
+            self.vars.clone(),
+        )
     }
 
     // expr = assign
@@ -48,6 +54,7 @@ impl<'a> Parser<'a> {
     }
 
     // stmt = "return expr ";"
+    //      | "{" compound-stmt
     //      | expr-stmt
     fn stmt(&mut self) -> Node {
         if self.r#match("return") {
@@ -59,7 +66,29 @@ impl<'a> Parser<'a> {
                 kind: NodeKind::Return { lhs: P::new(node) },
             };
         }
+
+        if self.r#match("{") {
+            self.advance();
+            return Node {
+                kind: NodeKind::Block {
+                    body: self.compound_stmt(),
+                },
+            };
+        }
         self.expr_stmt()
+    }
+
+    // compound-stmt = stmt* "}"
+    fn compound_stmt(&mut self) -> Vec<Node> {
+        let mut statements = vec![];
+
+        while !self.r#match("}") {
+            statements.push(self.stmt());
+        }
+
+        self.skip("}");
+
+        statements
     }
 
     // expr-stmt = expr ";"

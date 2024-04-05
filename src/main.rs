@@ -16,11 +16,11 @@ fn main() {
     let toks = lexer.tokenize();
 
     let mut parser = Parser::new(src, &toks);
-    let (nodes, vars) = parser.parse();
+    let (node, vars) = parser.parse();
     parser.ensure_done();
 
     let mut codegen = Codegen::new(src, vars);
-    codegen.program(&nodes);
+    codegen.program(&node);
 
     assert!(codegen.depth == 0);
 }

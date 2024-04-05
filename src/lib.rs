@@ -48,6 +48,9 @@ pub enum NodeKind {
 
     // Return
     Return { lhs: P<Node> },
+
+    // Block
+    Block { body: Vec<Node> },
 }
 
 #[derive(Debug, Clone, PartialEq)]

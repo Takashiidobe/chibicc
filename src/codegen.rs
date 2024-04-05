@@ -26,7 +26,7 @@ impl<'a> Codegen<'a> {
         }
     }
 
-    pub fn program(&mut self, nodes: &[Node]) {
+    pub fn program(&mut self, node: &Node) {
         println!("  .globl main");
         println!("main:");
 
@@ -36,9 +36,7 @@ impl<'a> Codegen<'a> {
         println!("  sub ${}, %rsp", self.vars.len() * 8);
         println!();
 
-        for node in nodes {
-            self.stmt(node);
-        }
+        self.stmt(node);
 
         // Epilogue
         println!();
@@ -163,6 +161,11 @@ impl<'a> Codegen<'a> {
             NodeKind::Return { ref lhs } => {
                 self.expr(lhs);
                 println!("  jmp .L.return");
+            }
+            NodeKind::Block { ref body } => {
+                for node in body {
+                    self.stmt(node);
+                }
             }
         };
     }
