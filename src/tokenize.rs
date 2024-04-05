@@ -59,6 +59,7 @@ impl<'a> Lexer<'a> {
             ("if", Keyword::If),
             ("else", Keyword::Else),
             ("for", Keyword::For),
+            ("while", Keyword::While),
         ]);
 
         if let TokenKind::Ident { ref name } = token.kind {

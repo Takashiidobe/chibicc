@@ -13,6 +13,7 @@ pub enum Keyword {
     If,
     Else,
     For,
+    While,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -102,9 +103,9 @@ pub enum NodeKind {
         r#else: Option<P<Node>>,
     },
 
-    // For
+    // For or while
     For {
-        init: P<Node>,
+        init: Option<P<Node>>,
         cond: Option<P<Node>>,
         then: P<Node>,
         inc: Option<P<Node>>,

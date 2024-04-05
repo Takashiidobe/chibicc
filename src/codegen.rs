@@ -203,7 +203,9 @@ impl<'a> Codegen<'a> {
             } => {
                 let c = self.count();
 
-                self.stmt(init);
+                if let Some(init) = init {
+                    self.stmt(init);
+                }
                 println!(".L.begin.{}:", c);
                 if let Some(cond) = cond {
                     self.expr(cond);
