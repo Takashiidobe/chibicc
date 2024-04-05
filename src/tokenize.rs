@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use crate::ErrorReporting;
 use crate::Keyword;
 use crate::Token;
@@ -49,6 +51,23 @@ impl<'a> Lexer<'a> {
         }
 
         String::from_utf8_lossy(&buf).parse().unwrap()
+    }
+
+    fn change_keyword(&mut self, token: &mut Token) {
+        let keyword_map = HashMap::from([
+            ("return", Keyword::Return),
+            ("if", Keyword::If),
+            ("else", Keyword::Else),
+            ("for", Keyword::For),
+        ]);
+
+        if let TokenKind::Ident { ref name } = token.kind {
+            if let Some(keyword) = keyword_map.get(name.as_str()) {
+                token.kind = TokenKind::Keyword {
+                    keyword: keyword.clone(),
+                }
+            }
+        }
     }
 
     pub fn tokenize(&mut self) -> Vec<Token> {
@@ -127,27 +146,11 @@ impl<'a> Lexer<'a> {
                     offset: start,
                     length: var.len(),
                     kind: TokenKind::Ident {
-                        name: keyword_or_ident.clone(),
+                        name: keyword_or_ident,
                     },
                 };
 
-                if keyword_or_ident == "return" {
-                    token.kind = TokenKind::Keyword {
-                        keyword: Keyword::Return,
-                    }
-                }
-
-                if keyword_or_ident == "if" {
-                    token.kind = TokenKind::Keyword {
-                        keyword: Keyword::If,
-                    }
-                }
-
-                if keyword_or_ident == "else" {
-                    token.kind = TokenKind::Keyword {
-                        keyword: Keyword::Else,
-                    }
-                }
+                self.change_keyword(&mut token);
 
                 toks.push(token);
             } else {

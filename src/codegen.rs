@@ -59,6 +59,12 @@ impl<'a> Codegen<'a> {
         self.depth -= 1;
     }
 
+    fn count(&mut self) -> i64 {
+        let count = self.count;
+        self.count += 1;
+        count
+    }
+
     fn stmt(&mut self, node: &Node) {
         self.expr(node);
     }
@@ -174,8 +180,7 @@ impl<'a> Codegen<'a> {
                 ref then,
                 ref r#else,
             } => {
-                let c = self.count;
-                self.count += 1;
+                let c = self.count();
 
                 self.expr(cond);
                 println!("  cmp $0, %rax");
@@ -188,6 +193,28 @@ impl<'a> Codegen<'a> {
                 if let Some(else_branch) = r#else {
                     self.stmt(else_branch);
                 }
+                println!(".L.end.{}:", c);
+            }
+            NodeKind::For {
+                ref init,
+                ref cond,
+                ref then,
+                ref inc,
+            } => {
+                let c = self.count();
+
+                self.stmt(init);
+                println!(".L.begin.{}:", c);
+                if let Some(cond) = cond {
+                    self.expr(cond);
+                    println!("  cmp $0, %rax");
+                    println!("  je  .L.end.{}", c);
+                }
+                self.stmt(then);
+                if let Some(inc) = inc {
+                    self.expr(inc);
+                }
+                println!("  jmp .L.begin.{}", c);
                 println!(".L.end.{}:", c);
             }
         };

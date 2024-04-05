@@ -55,6 +55,7 @@ impl<'a> Parser<'a> {
 
     // stmt = "return expr ";"
     //      | "if" "(" expr ")" stmt ("else" stmt)?
+    //      | "for" "(" expr-stmt expr? ";" expr? ")" stmt
     //      | "{" compound-stmt
     //      | expr-stmt
     fn stmt(&mut self) -> Node {
@@ -93,6 +94,34 @@ impl<'a> Parser<'a> {
                         r#else: None,
                     },
                 }
+            };
+        }
+
+        if self.r#match("for") {
+            self.advance();
+            self.skip("(");
+            let init = P::new(self.expr_stmt());
+            let mut cond = None;
+            let mut inc = None;
+
+            if !self.r#match(";") {
+                cond = Some(P::new(self.expr()));
+            }
+            self.skip(";");
+            if !self.r#match(")") {
+                inc = Some(P::new(self.expr()));
+            }
+            self.skip(")");
+
+            let then = P::new(self.stmt());
+
+            return Node {
+                kind: NodeKind::For {
+                    init,
+                    cond,
+                    then,
+                    inc,
+                },
             };
         }
 
