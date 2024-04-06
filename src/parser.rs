@@ -1,80 +1,73 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use crate::errors::ErrorReporting;
 use crate::lexer::{Token, TokenKind};
+use crate::errors::ErrorReporting;
 
 pub type P<A> = Box<A>;
 pub type SP<A> = Rc<RefCell<A>>;
 pub type AsciiStr = Vec<u8>;
 
-#[derive(Debug, Clone)]
-pub enum TypeKind {
+#[derive(Debug)]
+pub enum TyKind {
     Int,
-    Ptr(P<Type>),
-    Fn(P<Type>, Vec<P<Type>>),
-    Array(P<Type>, usize),
-    Unit,
+    Ptr(Rc<Ty>),
+    Fn(Rc<Ty>, Vec<Rc<Ty>>),
+    Array(Rc<Ty>, usize),
+    Unit
 }
 
-#[derive(Debug, Clone)]
-pub struct Type {
-    pub kind: TypeKind,
-    pub size: usize,
+#[derive(Debug)]
+pub struct Ty {
+    pub kind: TyKind,
+    pub size: usize
 }
 
-impl Type {
-    fn int() -> Type {
-        Type {
-            kind: TypeKind::Int,
-            size: 8,
-        }
-    }
-    fn unit() -> Type {
-        Type {
-            kind: TypeKind::Unit,
-            size: 0,
-        }
-    }
-    fn ptr(base: P<Type>) -> Type {
-        Type {
-            kind: TypeKind::Ptr(base),
-            size: 8,
-        }
-    }
-    fn func(ret: P<Type>, params: Vec<P<Type>>) -> Type {
-        Type {
-            kind: TypeKind::Fn(ret, params),
-            size: 0,
-        }
-    }
-    fn array(base: P<Type>, len: usize) -> Type {
+impl Ty {
+    fn int() -> Rc<Ty> { Rc::new(Ty { kind: TyKind::Int, size: 8 }) }
+    fn unit() -> Rc<Ty> { Rc::new(Ty { kind: TyKind::Unit, size: 0 }) }
+    fn ptr(base: Rc<Ty>) -> Rc<Ty> { Rc::new(Ty { kind: TyKind::Ptr(base), size: 8 }) }
+    fn func(ret: Rc<Ty>, params: Vec<Rc<Ty>>) -> Rc<Ty> { Rc::new(Ty { kind: TyKind::Fn(ret, params), size: 0 }) }
+    fn array(base: Rc<Ty>, len: usize) -> Rc<Ty> {
         let base_size = base.size;
-        Type {
-            kind: TypeKind::Array(base, len),
-            size: base_size * len,
-        }
+        Rc::new(Ty { kind: TyKind::Array(base, len), size: base_size*len })
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Node<Kind> {
     pub kind: Kind,
     pub offset: usize,
-    pub r#type: Type,
+    pub ty: Rc<Ty>
 }
 
-#[derive(Debug, Clone)]
-pub struct VarData {
+#[derive(Debug)]
+pub struct Function {
+    pub params: Vec<SP<Binding>>,
+    pub locals: Vec<SP<Binding>>,
+    pub body: P<StmtNode>,
+    pub stack_size: i64
+}
+
+#[derive(Debug)]
+pub enum BindingKind {
+    GlobalVar,
+    LocalVar { stack_offset: i64 },
+    Function(Function),
+}
+
+#[derive(Debug)]
+pub struct Binding {
+    pub kind: BindingKind,
     pub name: AsciiStr,
-    pub r#type: Type,
-    pub stack_offset: i64,
+    pub ty: Rc<Ty>,
+    pub offset: usize,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum ExprKind {
     Num(i64),
-    Var(SP<VarData>),
+    Var(SP<Binding>),
 
     Addr(P<ExprNode>),
     Deref(P<ExprNode>),
@@ -95,47 +88,28 @@ pub enum ExprKind {
     Assign(P<ExprNode>, P<ExprNode>),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum StmtKind {
     Expr(ExprNode),
     Return(ExprNode),
     Block(Vec<StmtNode>),
     If(P<ExprNode>, P<StmtNode>, Option<P<StmtNode>>),
-    For(
-        Option<P<StmtNode>>,
-        Option<P<ExprNode>>,
-        Option<P<ExprNode>>,
-        P<StmtNode>,
-    ),
-}
-
-#[derive(Debug, Clone)]
-pub enum TopDeclKind {
-    Function {
-        name: AsciiStr,
-        params: Vec<SP<VarData>>,
-        locals: Vec<SP<VarData>>,
-        body: StmtNode,
-        stack_size: i64,
-    },
+    For(Option<P<StmtNode>>, Option<P<ExprNode>>, Option<P<ExprNode>>, P<StmtNode>)
 }
 
 pub type ExprNode = Node<ExprKind>;
 pub type StmtNode = Node<StmtKind>;
-pub type TopDeclNode = Node<TopDeclKind>;
-pub type SourceUnit = Vec<TopDeclNode>;
+pub type SourceUnit = Vec<SP<Binding>>;
 
 pub struct Parser<'a> {
     src: &'a [u8],
     toks: &'a [Token],
     tok_index: usize,
-    vars: Vec<SP<VarData>>,
+    vars: Vec<SP<Binding>>,
 }
 
 impl<'a> ErrorReporting for Parser<'a> {
-    fn src(&self) -> &[u8] {
-        self.src
-    }
+    fn src(&self) -> &[u8] { self.src }
 }
 
 impl<'a> Parser<'a> {
@@ -147,7 +121,7 @@ impl<'a> Parser<'a> {
             src,
             toks,
             tok_index: 0,
-            vars: Vec::new(),
+            vars: Vec::new()
         }
     }
 
@@ -157,34 +131,34 @@ impl<'a> Parser<'a> {
         loop {
             match self.peek().kind {
                 TokenKind::Eof => break,
-                _ => fns.push(self.function()),
+                _ => fns.push(Rc::new(RefCell::new(self.function()))),
             }
         }
         fns
     }
 
-    pub fn function(&mut self) -> TopDeclNode {
+    pub fn function(&mut self) -> Binding {
         self.vars.clear();
 
         let offset = self.peek().offset;
-        let r#type = self.declspec();
-        let (r#type, name) = self.declarator(&r#type);
+        let ty = self.declspec();
+        let (ty, name) = self.declarator(ty);
 
         let params = self.vars.clone();
 
         let body = self.compound_stmt();
         // Reverse them to keep the locals layout in line with chibicc
-        let locals: Vec<SP<VarData>> = self.vars.clone().into_iter().rev().collect();
-        TopDeclNode {
-            kind: TopDeclKind::Function {
-                name,
+        let locals: Vec<SP<Binding>> = self.vars.clone().into_iter().rev().collect();
+        Binding {
+            kind: BindingKind::Function(Function {
                 params,
                 locals,
-                body,
-                stack_size: -1,
-            },
+                body: P::new(body),
+                stack_size: -1
+            }),
+            name,
+            ty,
             offset,
-            r#type,
         }
     }
 
@@ -199,11 +173,7 @@ impl<'a> Parser<'a> {
             let offset = self.advance().offset;
             let expr = self.expr();
             self.skip(";");
-            return StmtNode {
-                kind: StmtKind::Return(expr),
-                offset,
-                r#type: Type::unit(),
-            };
+            return StmtNode { kind: StmtKind::Return(expr), offset, ty: Ty::unit() }
         }
 
         if self.peek_is("if") {
@@ -217,11 +187,7 @@ impl<'a> Parser<'a> {
                 self.advance();
                 else_stmt = Some(P::new(self.stmt()));
             }
-            return StmtNode {
-                kind: StmtKind::If(cond, then_stmt, else_stmt),
-                offset,
-                r#type: Type::unit(),
-            };
+            return StmtNode { kind: StmtKind::If(cond, then_stmt, else_stmt), offset, ty: Ty::unit() }
         }
 
         if self.peek_is("for") {
@@ -243,11 +209,7 @@ impl<'a> Parser<'a> {
 
             let body = P::new(self.stmt());
 
-            return StmtNode {
-                kind: StmtKind::For(init, cond, inc, body),
-                offset,
-                r#type: Type::unit(),
-            };
+            return StmtNode { kind: StmtKind::For(init, cond, inc, body), offset, ty: Ty::unit() }
         }
 
         if self.peek_is("while") {
@@ -256,15 +218,11 @@ impl<'a> Parser<'a> {
             let cond = Some(P::new(self.expr()));
             self.skip(")");
             let body = P::new(self.stmt());
-            return StmtNode {
-                kind: StmtKind::For(None, cond, None, body),
-                offset,
-                r#type: Type::unit(),
-            };
+            return StmtNode { kind: StmtKind::For(None, cond, None, body), offset, ty: Ty::unit() }
         }
 
         if self.peek_is("{") {
-            return self.compound_stmt();
+            return self.compound_stmt()
         }
 
         self.expr_stmt()
@@ -277,20 +235,17 @@ impl<'a> Parser<'a> {
         while !self.peek_is("}") {
             if self.peek_is("int") {
                 self.declaration(&mut stmts);
-            } else {
+            }
+            else {
                 stmts.push(self.stmt());
             }
         }
         self.advance();
-        StmtNode {
-            kind: StmtKind::Block(stmts),
-            offset,
-            r#type: Type::unit(),
-        }
+        StmtNode { kind: StmtKind::Block(stmts), offset, ty: Ty::unit() }
     }
 
     // declaration = declspec (declarator ("=" expr)? ("," declarator ("=" expr)?)*)? ";"
-    fn declaration(&mut self, stmts: &mut Vec<StmtNode>) {
+    fn  declaration(&mut self, stmts: &mut Vec<StmtNode>) {
         let base_ty = self.declspec();
 
         let mut count = 0;
@@ -301,11 +256,12 @@ impl<'a> Parser<'a> {
             count += 1;
 
             let offset = self.peek().offset;
-            let (r#type, name) = self.declarator(&base_ty);
-            let var_data = Rc::new(RefCell::new(VarData {
+            let (ty, name) = self.declarator(base_ty.clone());
+            let var_data = Rc::new(RefCell::new(Binding {
+                kind: BindingKind::LocalVar { stack_offset: -1 },
                 name,
-                r#type: r#type.clone(),
-                stack_offset: -1,
+                ty: ty.clone(),
+                offset
             }));
             self.vars.push(var_data.clone());
 
@@ -314,45 +270,42 @@ impl<'a> Parser<'a> {
             }
 
             self.advance();
-            let lhs = ExprNode {
-                kind: ExprKind::Var(var_data),
-                offset,
-                r#type: r#type.clone(),
-            };
+            let lhs = ExprNode { kind: ExprKind::Var(var_data), offset, ty };
             let rhs = self.assign();
+            let rhs_ty = rhs.ty.clone();
             stmts.push(StmtNode {
                 kind: StmtKind::Expr(ExprNode {
                     kind: ExprKind::Assign(P::new(lhs), P::new(rhs)),
                     offset,
-                    r#type,
+                    ty: rhs_ty,
                 }),
                 offset,
-                r#type: Type::unit(),
+                ty: Ty::unit()
             });
         }
     }
 
     // declspec = "int"
-    fn declspec(&mut self) -> Type {
+    fn declspec(&mut self) -> Rc<Ty> {
         self.skip("int");
-        Type::int()
+        Ty::int()
     }
 
     // declarator = "*"* ident type-suffix
-    fn declarator(&mut self, base_type: &Type) -> (Type, AsciiStr) {
-        let mut r#type = base_type.clone();
+    fn declarator(&mut self, base_ty: Rc<Ty>) -> (Rc<Ty>, AsciiStr) {
+        let mut ty = base_ty;
         while self.peek_is("*") {
             self.advance();
-            r#type = Type::ptr(P::new(r#type));
+            ty = Ty::ptr(ty);
         }
 
         let decl = match self.peek().kind {
             TokenKind::Ident => {
                 let name = self.tok_source(self.peek()).to_owned();
                 self.advance();
-                (self.type_suffix(r#type), name)
-            }
-            _ => self.error_tok(self.peek(), "expected a variable name"),
+                (self.type_suffix(ty), name)
+            },
+            _ => self.error_tok(self.peek(), "expected a variable name")
         };
 
         println!("# DECL {}: {:?}", String::from_utf8_lossy(&decl.1), decl.0);
@@ -362,62 +315,58 @@ impl<'a> Parser<'a> {
     // type-suffix = "(" func-params
     //             | "[" num "]" type-suffix
     //             | ε
-    fn type_suffix(&mut self, r#type: Type) -> Type {
+    fn type_suffix(&mut self, ty: Rc<Ty>) -> Rc<Ty> {
         if self.peek_is("(") {
-            return self.func_params(r#type);
+            return self.func_params(ty);
         }
 
         if self.peek_is("[") {
             self.advance();
             let len = self.get_number();
             self.skip("]");
-            let r#type = self.type_suffix(r#type);
-            return Type::array(P::new(r#type), len.try_into().unwrap());
+            let ty = self.type_suffix(ty);
+            return Ty::array(ty, len.try_into().unwrap());
         }
-        r#type
+        return ty;
     }
 
     // func-params = (param ("," param)*)? ")"
     // param       = declspec declarator
-    fn func_params(&mut self, r#type: Type) -> Type {
+    fn func_params(&mut self, ret_ty: Rc<Ty>) -> Rc<Ty> {
         let mut params = Vec::new();
         self.advance();
         while !self.peek_is(")") {
-            if !params.is_empty() {
+            if params.len() > 0 {
                 self.skip(",");
             }
+            let offset = self.peek().offset;
             let base_ty = self.declspec();
-            let (r#type, name) = self.declarator(&base_ty);
-            params.push(P::new(r#type.clone()));
-            self.vars.push(Rc::new(RefCell::new(VarData {
-                name,
-                r#type,
-                stack_offset: -1,
-            })));
+            let (ty, name) = self.declarator(base_ty);
+            params.push(ty.clone());
+            self.vars.push(
+                Rc::new(RefCell::new(Binding {
+                    kind: BindingKind::LocalVar { stack_offset: -1 },
+                    name,
+                    ty,
+                    offset
+                }))
+            );
         }
         self.skip(")");
-        Type::func(P::new(r#type), params)
+        return Ty::func(ret_ty, params);
     }
 
     // expr-stmt = expr? ";"
     fn expr_stmt(&mut self) -> StmtNode {
         if self.peek_is(";") {
             let offset = self.advance().offset;
-            return StmtNode {
-                kind: StmtKind::Block(Vec::new()),
-                offset,
-                r#type: Type::unit(),
-            };
+            return StmtNode { kind: StmtKind::Block(Vec::new()), offset, ty: Ty::unit() }
         }
 
         let expr = self.expr();
         let offset = expr.offset;
         self.skip(";");
-        StmtNode {
-            kind: StmtKind::Expr(expr),
-            offset,
-            r#type: Type::unit(),
-        }
+        StmtNode { kind: StmtKind::Expr(expr), offset, ty: Ty::unit() }
     }
 
     // expr = assign
@@ -431,11 +380,11 @@ impl<'a> Parser<'a> {
         if self.peek_is("=") {
             let offset = self.advance().offset;
             let rhs = P::new(self.assign());
-            let r#type = node.r#type.clone();
+            let ty = node.ty.clone();
             node = ExprNode {
                 kind: ExprKind::Assign(P::new(node), rhs),
                 offset,
-                r#type,
+                ty
             };
         }
         node
@@ -451,16 +400,18 @@ impl<'a> Parser<'a> {
                 node = ExprNode {
                     kind: ExprKind::Eq(P::new(node), P::new(self.relational())),
                     offset,
-                    r#type: Type::int(),
+                    ty: Ty::int()
                 };
-            } else if self.peek_is("!=") {
+            }
+            else if self.peek_is("!=") {
                 let offset = self.advance().offset;
                 node = ExprNode {
                     kind: ExprKind::Ne(P::new(node), P::new(self.relational())),
                     offset,
-                    r#type: Type::int(),
+                    ty: Ty::int()
                 };
-            } else {
+            }
+            else {
                 break;
             }
         }
@@ -478,30 +429,34 @@ impl<'a> Parser<'a> {
                 node = ExprNode {
                     kind: ExprKind::Lt(P::new(node), P::new(self.add())),
                     offset,
-                    r#type: Type::int(),
+                    ty: Ty::int()
                 };
-            } else if self.peek_is("<=") {
+            }
+            else if self.peek_is("<=") {
                 let offset = self.advance().offset;
                 node = ExprNode {
                     kind: ExprKind::Le(P::new(node), P::new(self.add())),
                     offset,
-                    r#type: Type::int(),
+                    ty: Ty::int()
                 };
-            } else if self.peek_is(">") {
+            }
+            else if self.peek_is(">") {
                 let offset = self.advance().offset;
                 node = ExprNode {
                     kind: ExprKind::Lt(P::new(self.add()), P::new(node)),
                     offset,
-                    r#type: Type::int(),
+                    ty: Ty::int()
                 };
-            } else if self.peek_is(">=") {
+            }
+            else if self.peek_is(">=") {
                 let offset = self.advance().offset;
                 node = ExprNode {
                     kind: ExprKind::Le(P::new(self.add()), P::new(node)),
                     offset,
-                    r#type: Type::int(),
+                    ty: Ty::int()
                 };
-            } else {
+            }
+            else {
                 break;
             }
         }
@@ -518,11 +473,13 @@ impl<'a> Parser<'a> {
                 let offset = self.advance().offset;
                 let rhs = P::new(self.mul());
                 node = self.add_overload(P::new(node), rhs, offset);
-            } else if self.peek_is("-") {
+            }
+            else if self.peek_is("-") {
                 let offset = self.advance().offset;
                 let rhs = P::new(self.mul());
                 node = self.sub_overload(P::new(node), rhs, offset);
-            } else {
+            }
+            else {
                 break;
             }
         }
@@ -534,48 +491,46 @@ impl<'a> Parser<'a> {
         let mut lhs = lhs;
         let mut rhs = rhs;
 
-        if let TypeKind::Int = lhs.r#type.kind {
-            if let TypeKind::Ptr(_) | TypeKind::Array(_, _) = rhs.r#type.kind {
-                std::mem::swap(&mut lhs, &mut rhs);
+        if let TyKind::Int = lhs.ty.kind {
+            if let TyKind::Ptr(_) | TyKind::Array(_, _) = rhs.ty.kind {
+                let tmp = lhs;
+                lhs = rhs;
+                rhs = tmp;
             }
         }
 
-        match (&lhs.r#type.kind, &rhs.r#type.kind) {
-            (TypeKind::Int, TypeKind::Int) => synth_add(lhs, rhs, offset),
-            (TypeKind::Ptr(bt), TypeKind::Int) | (TypeKind::Array(bt, _), TypeKind::Int) => {
-                let rhs = synth_mul(
-                    P::new(synth_num(bt.size.try_into().unwrap(), offset)),
-                    rhs,
-                    offset,
-                );
+        match (&lhs.ty.kind, &rhs.ty.kind) {
+            (TyKind::Int, TyKind::Int) => {
+                synth_add(lhs, rhs, offset)
+            },
+            (TyKind::Ptr(bt), TyKind::Int) | (TyKind::Array(bt, _), TyKind::Int) => {
+                let size = P::new(synth_num(bt.size.try_into().unwrap(), offset));
+                let rhs = synth_mul(size, rhs, offset);
                 synth_add(lhs, P::new(rhs), offset)
-            }
-            _ => self.error_at(offset, "invalid operands"),
+            },
+            _ => self.error_at(offset, "invalid operands")
         }
     }
 
     fn sub_overload(&self, lhs: P<ExprNode>, rhs: P<ExprNode>, offset: usize) -> ExprNode {
-        match (&lhs.r#type.kind, &rhs.r#type.kind) {
-            (TypeKind::Int, TypeKind::Int) => synth_sub(lhs, rhs, offset),
-            (TypeKind::Ptr(bt), TypeKind::Int) | (TypeKind::Array(bt, _), TypeKind::Int) => {
-                let rhs = synth_mul(
-                    P::new(synth_num(bt.size.try_into().unwrap(), offset)),
-                    rhs,
-                    offset,
-                );
+        match (&lhs.ty.kind, &rhs.ty.kind) {
+            (TyKind::Int, TyKind::Int) => {
+                synth_sub(lhs, rhs, offset)
+            },
+            (TyKind::Ptr(bt), TyKind::Int) | (TyKind::Array(bt, _), TyKind::Int) => {
+                let size = P::new(synth_num(bt.size.try_into().unwrap(), offset));
+                let rhs = synth_mul(size, rhs, offset);
                 synth_sub(lhs, P::new(rhs), offset)
-            }
+            },
             // TODO better way than combinatorial explosion?
-            (TypeKind::Ptr(bt), TypeKind::Ptr(_))
-            | (TypeKind::Array(bt, _), TypeKind::Ptr(_))
-            | (TypeKind::Ptr(bt), TypeKind::Array(_, _))
-            | (TypeKind::Array(bt, _), TypeKind::Array(_, _)) => {
+            (TyKind::Ptr(bt), TyKind::Ptr(_)) | (TyKind::Array(bt, _), TyKind::Ptr(_)) |
+            (TyKind::Ptr(bt), TyKind::Array(_, _)) | (TyKind::Array(bt, _), TyKind::Array(_,_)) => {
                 let size: i64 = bt.size.try_into().unwrap();
                 let mut sub = synth_sub(lhs, rhs, offset);
-                sub.r#type = Type::int();
+                sub.ty = Ty::int();
                 synth_div(P::new(sub), P::new(synth_num(size, offset)), offset)
             }
-            _ => self.error_at(offset, "invalid operands"),
+            _ => self.error_at(offset, "invalid operands")
         }
     }
 
@@ -586,21 +541,23 @@ impl<'a> Parser<'a> {
         loop {
             if self.peek_is("*") {
                 let offset = self.advance().offset;
-                let r#type = node.r#type.clone();
+                let ty = node.ty.clone();
                 node = ExprNode {
                     kind: ExprKind::Mul(P::new(node), P::new(self.unary())),
                     offset,
-                    r#type,
+                    ty
                 };
-            } else if self.peek_is("/") {
+            }
+            else if self.peek_is("/") {
                 let offset = self.advance().offset;
-                let r#type = node.r#type.clone();
+                let ty = node.ty.clone();
                 node = ExprNode {
                     kind: ExprKind::Div(P::new(node), P::new(self.unary())),
                     offset,
-                    r#type,
+                    ty
                 };
-            } else {
+            }
+            else {
                 break;
             }
         }
@@ -613,50 +570,30 @@ impl<'a> Parser<'a> {
     fn unary(&mut self) -> ExprNode {
         if self.peek_is("+") {
             self.advance();
-            return self.unary();
+            return self.unary()
         }
 
         if self.peek_is("-") {
             let offset = self.advance().offset;
             let node = P::new(self.unary());
-            let r#type = node.r#type.clone();
-            return ExprNode {
-                kind: ExprKind::Neg(node),
-                offset,
-                r#type,
-            };
+            let ty = node.ty.clone();
+            return ExprNode { kind: ExprKind::Neg(node), offset, ty }
         }
 
         if self.peek_is("&") {
             let offset = self.advance().offset;
             let node = P::new(self.unary());
-            let r#type = match &node.r#type.kind {
-                TypeKind::Array(base_type, _) => Type::ptr(P::new(*base_type.clone())),
-                _ => Type::ptr(P::new(node.r#type.clone())),
+            let ty = match &node.ty.kind {
+                TyKind::Array(base_ty, _) => Ty::ptr(base_ty.clone()),
+                _ => Ty::ptr(node.ty.clone())
             };
-            return ExprNode {
-                kind: ExprKind::Addr(node),
-                offset,
-                r#type,
-            };
+            return ExprNode { kind: ExprKind::Addr(node), offset, ty }
         }
 
         if self.peek_is("*") {
             let offset = self.advance().offset;
-            let node = P::new(self.unary());
-            let r#type = match &node.r#type.kind {
-                TypeKind::Ptr(base) => *base.clone(),
-                TypeKind::Array(base, _) => *base.clone(),
-                _ => {
-                    println!("{:?}", node);
-                    self.error_at(offset, "invalid pointer dereference")
-                }
-            };
-            return ExprNode {
-                kind: ExprKind::Deref(node),
-                offset,
-                r#type,
-            };
+            let node = self.unary();
+            return self.synth_deref(P::new(node), offset);
         }
 
         self.postfix()
@@ -675,16 +612,19 @@ impl<'a> Parser<'a> {
         node
     }
 
-    // primary = "(" expr ")" | "sizeof" unary | ident func-args? | num
+    // primary = "(" expr ")" | "sizeof" unary | funcall | num
     fn primary(&mut self) -> ExprNode {
         match self.peek().kind {
             TokenKind::Num(val) => {
                 let offset = self.advance().offset;
-                return ExprNode {
-                    kind: ExprKind::Num(val),
-                    offset,
-                    r#type: Type::int(),
-                };
+                return ExprNode { kind: ExprKind::Num(val), offset, ty: Ty::int() }
+            },
+            TokenKind::Keyword => {
+                if self.peek_is("sizeof") {
+                    self.advance();
+                    let node = self.unary();
+                    return synth_num(node.ty.size.try_into().unwrap(), node.offset);
+                }
             }
             TokenKind::Ident => {
                 if self.la_is(1, "(") {
@@ -698,32 +638,21 @@ impl<'a> Parser<'a> {
 
                 let var_data = self.vars.iter().find(|v| v.borrow().name == name);
                 if let Some(var_data) = var_data {
-                    let r#type = var_data.borrow_mut().r#type.clone();
-                    let expr = ExprNode {
-                        kind: ExprKind::Var(var_data.clone()),
-                        offset,
-                        r#type,
-                    };
+                    let ty = var_data.borrow_mut().ty.clone();
+                    let expr = ExprNode { kind: ExprKind::Var(var_data.clone()), offset, ty };
                     return expr;
-                } else {
+                }
+                else {
                     self.error_at(offset, "undefined variable");
                 }
             }
-            TokenKind::Punct => {
+            TokenKind::Punct =>
                 if self.peek_is("(") {
                     self.advance();
                     let node = self.expr();
                     self.skip(")");
-                    return node;
-                }
-            }
-            TokenKind::Keyword => {
-                if self.peek_is("sizeof") {
-                    self.advance();
-                    let node = self.unary();
-                    return synth_num(node.r#type.size.try_into().unwrap(), node.offset);
-                }
-            }
+                    return node
+                },
             _ => {}
         };
         self.error_tok(self.peek(), "expected an expression");
@@ -739,7 +668,7 @@ impl<'a> Parser<'a> {
         let mut args = Vec::new();
         self.skip("(");
         while !self.peek_is(")") {
-            if !args.is_empty() {
+            if args.len() > 0 {
                 self.skip(",");
             }
             args.push(P::new(self.assign()));
@@ -749,16 +678,12 @@ impl<'a> Parser<'a> {
         ExprNode {
             kind: ExprKind::Funcall(fn_name, args),
             offset,
-            r#type: Type::int(),
+            ty: Ty::int(),
         }
     }
 
-    fn peek(&self) -> &Token {
-        &self.toks[self.tok_index]
-    }
-    fn la(&self, n: usize) -> &Token {
-        &self.toks[self.tok_index + n]
-    }
+    fn peek(&self) -> &Token { &self.toks[self.tok_index] }
+    fn la(&self, n: usize) -> &Token { &self.toks[self.tok_index + n] }
     fn advance(&mut self) -> &Token {
         if self.tok_index >= self.toks.len() {
             panic!("Unexpected end of file");
@@ -771,7 +696,7 @@ impl<'a> Parser<'a> {
     fn get_number(&mut self) -> i64 {
         if let TokenKind::Num(val) = self.peek().kind {
             self.advance();
-            return val;
+            return val
         }
         self.error_tok(self.peek(), "expected a number");
     }
@@ -796,7 +721,10 @@ impl<'a> Parser<'a> {
     }
 
     fn is_done(&self) -> bool {
-        matches!(self.peek().kind, TokenKind::Eof)
+        match self.peek().kind {
+            TokenKind::Eof => true,
+            _ => false
+        }
     }
 
     pub fn ensure_done(&self) {
@@ -806,67 +734,48 @@ impl<'a> Parser<'a> {
     }
 
     fn synth_deref(&self, expr: P<ExprNode>, offset: usize) -> ExprNode {
-        let base_ty = get_base_type(&expr.r#type);
-        let r#type = match base_ty {
+        let base_ty = get_base_ty(&expr.ty);
+        let ty = match base_ty {
             None => self.error_at(offset, "invalid pointer dereference"),
-            Some(base_ty) => base_ty.clone(),
+            Some(base_ty) => base_ty.clone()
         };
-        ExprNode {
-            kind: ExprKind::Deref(expr),
-            offset,
-            r#type,
-        }
+        ExprNode { kind: ExprKind::Deref(expr), offset, ty }
+    }
+
+    #[allow(dead_code)]
+    fn src_rest(&self) -> std::borrow::Cow<str> {
+        String::from_utf8_lossy(&self.src[self.peek().offset..])
     }
 }
 
 fn synth_num(v: i64, offset: usize) -> ExprNode {
-    ExprNode {
-        kind: ExprKind::Num(v),
-        offset,
-        r#type: Type::int(),
-    }
+    ExprNode { kind: ExprKind::Num(v), offset, ty: Ty::int() }
 }
 
 fn synth_add(lhs: P<ExprNode>, rhs: P<ExprNode>, offset: usize) -> ExprNode {
-    let r#type = lhs.r#type.clone();
-    ExprNode {
-        kind: ExprKind::Add(lhs, rhs),
-        offset,
-        r#type,
-    }
+    let ty = lhs.ty.clone();
+    ExprNode { kind: ExprKind::Add(lhs, rhs), offset, ty }
 }
 
 fn synth_mul(lhs: P<ExprNode>, rhs: P<ExprNode>, offset: usize) -> ExprNode {
-    let r#type = lhs.r#type.clone();
-    ExprNode {
-        kind: ExprKind::Mul(lhs, rhs),
-        offset,
-        r#type,
-    }
+    let ty = lhs.ty.clone();
+    ExprNode { kind: ExprKind::Mul(lhs, rhs), offset, ty }
 }
 
 fn synth_sub(lhs: P<ExprNode>, rhs: P<ExprNode>, offset: usize) -> ExprNode {
-    let r#type = lhs.r#type.clone();
-    ExprNode {
-        kind: ExprKind::Sub(lhs, rhs),
-        offset,
-        r#type,
-    }
+    let ty = lhs.ty.clone();
+    ExprNode { kind: ExprKind::Sub(lhs, rhs), offset, ty }
 }
 
 fn synth_div(lhs: P<ExprNode>, rhs: P<ExprNode>, offset: usize) -> ExprNode {
-    let r#type = lhs.r#type.clone();
-    ExprNode {
-        kind: ExprKind::Div(lhs, rhs),
-        offset,
-        r#type,
-    }
+    let ty = lhs.ty.clone();
+    ExprNode { kind: ExprKind::Div(lhs, rhs), offset, ty }
 }
 
-fn get_base_type(ty: &Type) -> Option<&Type> {
+fn get_base_ty(ty: &Rc<Ty>) -> Option<&Rc<Ty>> {
     match &ty.kind {
-        TypeKind::Ptr(bt) => Some(bt),
-        TypeKind::Array(bt, _) => Some(bt),
-        _ => None,
+        TyKind::Ptr(bt) => Some(bt),
+        TyKind::Array(bt, _) => Some(bt),
+        _ => None
     }
 }
