@@ -1,51 +1,77 @@
-use crate::errors::ErrorReporting;
-use crate::parser::{Binding, BindingKind, Function, StmtNode, StmtKind, ExprNode, ExprKind, SourceUnit, TyKind, Ty};
+use std::{io::Write, ops::{Add, Sub, Div, Mul}, fmt::Display, rc::Rc};
 
-const ARG_REGS: [&str;6] = [
+use crate::{parser::{BindingKind, Function, StmtNode, StmtKind, ExprNode, ExprKind, SourceUnit, TyKind, Ty}, context::{Context, ascii}};
+
+const ARG_REGS8: [&str;6] = [
+    "%dil", "%sil", "%dl", "%cl", "%r8b", "%r9b"
+];
+const ARG_REGS16: [&str;6] = [
+    "%di", "%si", "%dx", "%cx", "%r8w", "%r9w"
+];
+const ARG_REGS32: [&str;6] = [
+    "%edi", "%esi", "%edx", "%ecx", "%r8d", "%r9d"
+];
+const ARG_REGS64: [&str;6] = [
     "%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"
 ];
 
-fn update_stack_info(node: &mut Binding) {
-    match node.kind {
-        BindingKind::Function(Function {
-            ref locals,
-            ref mut stack_size,
-            ..
-        }) => {
-            let mut offset: i64 = 0;
-            for local in locals {
-                let mut local = local.borrow_mut();
-                let ty_size: i64 = local.ty.size.try_into().unwrap();
-                if let BindingKind::LocalVar { stack_offset } = &mut local.kind {
-                    offset -= ty_size;
-                    *stack_offset = offset;
+pub fn preprocess_source_unit(su: &SourceUnit) {
+    for decl in su {
+        let mut node = decl.borrow_mut();
+        match node.kind {
+            BindingKind::Function(Function {
+                ref locals,
+                ref mut stack_size,
+                ..
+            }) => {
+                let mut offset: i64 = 0;
+                for local in locals {
+                    let mut local = local.borrow_mut();
+                    let ty_size: i64 = local.ty.size.try_into().unwrap();
+                    let ty_align: i64 = local.ty.align.try_into().unwrap();
+                    if let BindingKind::LocalVar { stack_offset } = &mut local.kind {
+                        offset += ty_size;
+                        offset = align_to(offset, ty_align);
+                        *stack_offset = -offset;
+                    }
                 }
+                *stack_size = align_to(offset, 16);
             }
-            *stack_size = align_to(-offset, 16);
+            _ => {}
         }
-        _ => {}
     }
 }
 
 pub struct Codegen<'a> {
-    src: &'a [u8],
-    su: SourceUnit,
+    ctx: &'a Context,
+    out: &'a mut dyn Write,
+    su: &'a SourceUnit,
     depth: i64,
     id_count: usize,
     cur_ret_lbl: Option<String>
 }
 
-impl<'a> ErrorReporting for Codegen<'a> {
-    fn src(&self) -> &[u8] { self.src }
+macro_rules! wln {
+    ( $s:expr, $( $e:expr ),+ ) => {
+        writeln!( $s.out, $( $e ),+ ).unwrap()
+    };
+
+    ( $s:expr ) => {
+        writeln!( $s.out ).unwrap()
+    }
+}
+
+macro_rules! w {
+    ( $s:expr, $( $e:expr ),+ ) => {
+        write!( $s.out, $( $e ),+ ).unwrap()
+    }
 }
 
 impl<'a> Codegen<'a> {
-    pub fn new(src: &'a [u8], su: SourceUnit) -> Self {
-        for decl in &su {
-            update_stack_info(&mut decl.borrow_mut());
-        }
+    pub fn new(ctx: &'a Context, out: &'a mut dyn Write, su: &'a SourceUnit) -> Self {
         Self {
-            src,
+            ctx,
+            out,
             su,
             depth: 0,
             id_count: 0,
@@ -58,23 +84,37 @@ impl<'a> Codegen<'a> {
         self.text_section();
     }
 
-    fn data_sections(&self) {
-        for binding in &self.su {
+    fn data_sections(&mut self) {
+        for binding in self.su {
             let binding = binding.borrow();
-            if let BindingKind::GlobalVar = binding.kind {
-                let name = String::from_utf8_lossy(&binding.name);
-                println!("  .data");
-                println!("  .globl {}", name);
-                println!("{}:", name);
-                println!("  .zero {}", binding.ty.size);
+            if let BindingKind::GlobalVar { init_data } = &binding.kind {
+                let name = ascii(&binding.name);
+                wln!(self, "  .data");
+                wln!(self, "  .globl {}", name);
+                wln!(self, "{}:", name);
+                if let Some(init_data) = init_data {
+                    w!(self, "  .byte ");
+                    let mut it = init_data.iter().peekable();
+                    while let Some(b) = it.next() {
+                        if it.peek().is_none() {
+                            wln!(self, "{}", b);
+                        }
+                        else {
+                            w!(self, "{},", b);
+                        }
+                    }
+                }
+                else {
+                    wln!(self, "  .zero {}", binding.ty.size);
+                }
             }
         }
     }
 
     fn text_section(&mut self) {
-        // This still sucks... just less than before
-        for i in 0..self.su.len() {
-            let decl = self.su[i].clone();
+        wln!(self);
+        wln!(self, "  .text");
+        for decl in self.su.iter() {
             let decl = decl.borrow();
             if let BindingKind::Function(Function {
                 ref params,
@@ -82,52 +122,65 @@ impl<'a> Codegen<'a> {
                 ref body,
                 stack_size
             }) = decl.kind {
-                let name = String::from_utf8_lossy(&decl.name);
+                let name = ascii(&decl.name);
                 let ret_lbl = format!(".L.return.{}", name);
                 self.cur_ret_lbl = Some(ret_lbl);
 
-                println!();
-                println!("  .globl {}", name);
+                wln!(self);
+                wln!(self, "  .globl {}", name);
                 for local in locals {
                     let local = local.borrow();
                     if let BindingKind::LocalVar { stack_offset } = local.kind {
-                        println!("# var {} offset {}", String::from_utf8_lossy(&local.name), stack_offset);
+                        wln!(self, "# var {} offset {}", ascii(&local.name), stack_offset);
                     }
                 }
-                println!("{}:", name);
+                wln!(self, "{}:", name);
+                wln!(self, ".loc 1 {} {}", body.loc.line, body.loc.column);
 
                 // Prologue
-                println!("  push %rbp");
-                println!("  mov %rsp, %rbp");
-                println!("  sub ${}, %rsp", stack_size);
-                println!();
+                wln!(self, "  push %rbp");
+                wln!(self, "  mov %rsp, %rbp");
+                wln!(self, "  sub ${}, %rsp", stack_size);
+                wln!(self);
 
                 for (i, param) in params.iter().enumerate() {
-                    if let BindingKind::LocalVar { stack_offset } = param.borrow().kind {
-                        println!("  mov {}, {}(%rbp)", ARG_REGS[i], stack_offset);
+                    let param = param.borrow();
+                    if let BindingKind::LocalVar { stack_offset } = param.kind {
+                        self.store_gp(i, stack_offset, param.ty.size)
                     }
                 }
 
                 self.stmt(&body);
                 self.sanity_checks();
 
-                println!();
-                println!("{}:", self.cur_ret_lbl.as_ref().unwrap());
-                println!("  mov %rbp, %rsp");
-                println!("  pop %rbp");
-                println!("  ret");
-                println!();
+                wln!(self);
+                wln!(self, "{}:", self.cur_ret_lbl.as_ref().unwrap());
+                wln!(self, "  mov %rbp, %rsp");
+                wln!(self, "  pop %rbp");
+                wln!(self, "  ret");
+                wln!(self);
             };
         }
     }
 
+    fn store_gp(&mut self, reg_idx: usize, stack_offset: i64, size: usize) {
+        match size {
+            1 => wln!(self, " mov {}, {}(%rbp)", ARG_REGS8[reg_idx], stack_offset),
+            2 => wln!(self, " mov {}, {}(%rbp)", ARG_REGS16[reg_idx], stack_offset),
+            4 => wln!(self, " mov {}, {}(%rbp)", ARG_REGS32[reg_idx], stack_offset),
+            8 => wln!(self, " mov {}, {}(%rbp)", ARG_REGS64[reg_idx], stack_offset),
+            _ => panic!("invalid size")
+        }
+    }
+
     fn stmt(&mut self, node: &StmtNode) {
+        wln!(self, "  .loc 1 {} {}", node.loc.line, node.loc.column);
         match node.kind {
             StmtKind::Expr(ref expr) => self.expr(expr),
             StmtKind::Return(ref expr) => {
                 self.expr(expr);
                 let ret_lbl = self.cur_ret_lbl.as_ref().unwrap();
-                println!("  jmp {}", ret_lbl);
+                wln!(self, "  jmp {}", ret_lbl);
             },
             StmtKind::Block(ref stmts) => {
                 for stmt in stmts {
@@ -137,45 +190,50 @@ impl<'a> Codegen<'a> {
             StmtKind::If(ref cond, ref then_stmt, ref else_stmt) => {
                 let id = self.next_id();
                 self.expr(cond);
-                println!("  cmp $0, %rax");
-                println!("  je .L.else.{}", id);
+                wln!(self, "  cmp $0, %rax");
+                wln!(self, "  je .L.else.{}", id);
                 self.stmt(then_stmt);
-                println!("  jmp .L.end.{}", id);
-                println!(".L.else.{}:", id);
+                wln!(self, "  jmp .L.end.{}", id);
+                wln!(self, ".L.else.{}:", id);
                 if let Some(else_stmt) = else_stmt {
                     self.stmt(else_stmt);
                 }
-                println!(".L.end.{}:", id);
+                wln!(self, ".L.end.{}:", id);
             },
             StmtKind::For(ref init, ref cond, ref inc, ref body) => {
                 let id = self.next_id();
                 if let Some(init) = init {
                     self.stmt(init);
                 }
-                println!(".L.begin.{}:", id);
+                wln!(self, ".L.begin.{}:", id);
                 if let Some(cond) = cond {
                     self.expr(cond);
-                    println!("  cmp $0, %rax");
-                    println!("  je .L.end.{}", id);
+                    wln!(self, "  cmp $0, %rax");
+                    wln!(self, "  je .L.end.{}", id);
                 }
                 self.stmt(body);
                 if let Some(inc) = inc {
                     self.expr(inc);
                 }
-                println!("  jmp .L.begin.{}", id);
-                println!(".L.end.{}:", id);
+                wln!(self, "  jmp .L.begin.{}", id);
+                wln!(self, ".L.end.{}:", id);
             },
         }
     }
 
     fn expr(&mut self, node: &ExprNode) {
+        wln!(self, "  .loc 1 {} {}", node.loc.line, node.loc.column);
         match &node.kind {
-            ExprKind::Num(val) => println!("  mov ${}, %rax", val),
+            ExprKind::Num(val) => wln!(self, "  mov ${}, %rax", val),
             ExprKind::Neg(expr) => {
                 self.expr(expr);
-                println!("  neg %rax");
+                wln!(self, "  neg %rax");
             }
             ExprKind::Var(_) => {
+                self.addr(node);
+                self.load(&node.ty);
+            }
+            ExprKind::MemberAccess(_, _) => {
                 self.addr(node);
                 self.load(&node.ty);
             }
@@ -185,10 +243,10 @@ impl<'a> Codegen<'a> {
                     self.push();
                 }
                 for i in (0..args.len()).rev() {
-                    self.pop(ARG_REGS[i]);
+                    self.pop(ARG_REGS64[i]);
                 }
-                println!("  mov $0, %rax");
-                println!("  call {}", String::from_utf8_lossy(name));
+                wln!(self, "  mov $0, %rax");
+                wln!(self, "  call {}", ascii(name));
             }
             ExprKind::Addr(expr) => {
                 self.addr(expr);
@@ -201,117 +259,226 @@ impl<'a> Codegen<'a> {
                 self.addr(lhs);
                 self.push();
                 self.expr(rhs);
-                self.store();
+                self.store(&node.ty);
             }
             ExprKind::Add(lhs, rhs) => {
-                self.expr(rhs.as_ref());
+                self.expr(rhs);
                 self.push();
-                self.expr(lhs.as_ref());
+                self.expr(lhs);
                 self.pop("%rdi");
-                println!("  add %rdi, %rax");
+                wln!(self, "  add {}, {}", data_reg(&lhs.ty), acc_reg(&lhs.ty));
             }
             ExprKind::Sub(lhs, rhs) => {
-                self.expr(rhs.as_ref());
+                self.expr(rhs);
                 self.push();
-                self.expr(lhs.as_ref());
+                self.expr(lhs);
                 self.pop("%rdi");
-                println!("  sub %rdi, %rax");
+                wln!(self, "  sub {}, {}", data_reg(&lhs.ty), acc_reg(&lhs.ty));
             }
             ExprKind::Mul(lhs, rhs) => {
-                self.expr(rhs.as_ref());
+                self.expr(rhs);
                 self.push();
-                self.expr(lhs.as_ref());
+                self.expr(lhs);
                 self.pop("%rdi");
-                println!("  imul %rdi, %rax");
+                wln!(self, "  imul {}, {}", data_reg(&lhs.ty), acc_reg(&lhs.ty));
             }
             ExprKind::Div(lhs, rhs) => {
-                self.expr(rhs.as_ref());
+                self.expr(rhs);
                 self.push();
-                self.expr(lhs.as_ref());
+                self.expr(lhs);
                 self.pop("%rdi");
-                println!("  cqo");
-                println!("  idiv %rdi, %rax");
+                if lhs.ty.size == 8 {
+                    wln!(self, "  cqo");
+                }
+                else {
+                    wln!(self, "  cdq");
+                }
+                wln!(self, "  idiv {}", data_reg(&lhs.ty));
             }
             ExprKind::Eq(lhs, rhs) => {
-                self.expr(rhs.as_ref());
+                self.expr(rhs);
                 self.push();
-                self.expr(lhs.as_ref());
+                self.expr(lhs);
                 self.pop("%rdi");
-                println!("  cmp %rdi, %rax");
-                println!("  sete %al");
-                println!("  movzb %al, %rax");
+                wln!(self, "  cmp {}, {}", data_reg(&lhs.ty), acc_reg(&lhs.ty));
+                wln!(self, "  sete %al");
+                wln!(self, "  movzb %al, %rax");
             }
             ExprKind::Ne(lhs, rhs) => {
-                self.expr(rhs.as_ref());
+                self.expr(rhs);
                 self.push();
-                self.expr(lhs.as_ref());
+                self.expr(lhs);
                 self.pop("%rdi");
-                println!("  cmp %rdi, %rax");
-                println!("  setne %al");
-                println!("  movzb %al, %rax");
+                wln!(self, "  cmp {}, {}", data_reg(&lhs.ty), acc_reg(&lhs.ty));
+                wln!(self, "  setne %al");
+                wln!(self, "  movzb %al, %rax");
             }
             ExprKind::Le(lhs, rhs) => {
-                self.expr(rhs.as_ref());
+                self.expr(rhs);
                 self.push();
-                self.expr(lhs.as_ref());
+                self.expr(lhs);
                 self.pop("%rdi");
-                println!("  cmp %rdi, %rax");
-                println!("  setle %al");
-                println!("  movzb %al, %rax");
+                wln!(self, "  cmp {}, {}", data_reg(&lhs.ty), acc_reg(&lhs.ty));
+                wln!(self, "  setle %al");
+                wln!(self, "  movzb %al, %rax");
             }
             ExprKind::Lt(lhs, rhs) => {
-                self.expr(rhs.as_ref());
+                self.expr(rhs);
                 self.push();
-                self.expr(lhs.as_ref());
+                self.expr(lhs);
                 self.pop("%rdi");
-                println!("  cmp %rdi, %rax");
-                println!("  setl %al");
-                println!("  movzb %al, %rax");
+                wln!(self, "  cmp {}, {}", data_reg(&lhs.ty), acc_reg(&lhs.ty));
+                wln!(self, "  setl %al");
+                wln!(self, "  movzb %al, %rax");
+            }
+            ExprKind::Comma(exprs) => {
+                for expr in exprs {
+                    self.expr(expr);
+                }
+            }
+            ExprKind::StmtExpr(body) => {
+                if let StmtKind::Block(stmts) = &body.kind {
+                    for stmt in stmts {
+                        self.stmt(stmt);
+                    }
+                }
+            },
+            ExprKind::Cast(expr) => {
+                self.expr(expr);
+
+                let from = &expr.ty;
+                let to = &node.ty;
+
+                match to.kind {
+                    TyKind::Unit => {},
+                    TyKind::Bool => {
+                        self.cmp_zero(from);
+                        wln!(self, "  setne %al");
+                        wln!(self, "  movzx %al, %eax");
+                    }
+                    _ => {
+                        let from_index = to_cast_type(from) as usize;
+                        let to_index = to_cast_type(to) as usize;
+                        CAST_TABLE[from_index][to_index].map(|instr| wln!(self, "  {}", instr));
+                    }
+                }
             }
         };
     }
 
-    fn load(&self, ty: &Ty) {
-        // println!("LOAD {:?}", ty);
-        if let TyKind::Array(_, _) = ty.kind {
-            return;
+    fn cmp_zero(&mut self, ty: &Ty) {
+        if ty.is_integer_like() && ty.size <= 4 {
+            wln!(self, "  cmp $0, %eax");
         }
-        println!("  mov (%rax), %rax");
+        else {
+            wln!(self, "  cmp $0, %rax");
+        }
     }
 
-    fn store(&mut self) {
+    fn load(&mut self, ty: &Ty) {
+        match ty.kind {
+            TyKind::Array(_, _) | TyKind::Struct(_) | TyKind::Union(_) =>
+                // If it is an array/struct/union, do not attempt to load a value to the
+                // register because in general we can't load an entire array to a
+                // register. As a result, the result of an evaluation of an array
+                // becomes not the array itself but the address of the array.
+                // This is where "array is automatically converted to a pointer to
+                // the first element of the array in C" occurs.
+                return,
+            _ => {},
+        }
+
+        // When we load a char or a short value to a register, we always
+        // extend them to the size of int, so we can assume the lower half of
+        // a register always contains a valid value. The upper half of a
+        // register for char, short and int may contain garbage. When we load
+        // a long value to a register, it simply occupies the entire register.
+        if ty.size == 1 {
+            wln!(self, "  movsbl (%rax), %eax");
+        }
+        else if ty.size == 2 {
+            wln!(self, "  movswl (%rax), %eax");
+        }
+        else if ty.size == 4 {
+            wln!(self, "  movsxd (%rax), %rax");
+        }
+        else {
+            wln!(self, "  mov (%rax), %rax");
+        }
+    }
+
+    fn store(&mut self, ty: &Ty) {
         self.pop("%rdi");
-        println!("  mov %rax, (%rdi)");
+
+        match &ty.kind {
+            TyKind::Struct(_) | TyKind::Union(_) => {
+                for i in 0..ty.size {
+                    wln!(self, "  mov {}(%rax), %r8b", i);
+                    wln!(self, "  mov %r8b, {}(%rdi)", i);
+                }
+                return;
+            },
+            _ => {}
+        }
+
+        if ty.size == 1 {
+            wln!(self, "  mov %al, (%rdi)");
+        }
+        else if ty.size == 2 {
+            wln!(self, "  mov %ax, (%rdi)");
+        }
+        else if ty.size == 4 {
+            wln!(self, "  mov %eax, (%rdi)");
+        }
+        else {
+            wln!(self, "  mov %rax, (%rdi)");
+        }
     }
 
     fn push(&mut self) {
-        println!("  push %rax");
+        wln!(self, "  push %rax");
         self.depth += 1;
     }
 
     fn pop(&mut self, arg: &str) {
-        println!("  pop {}", arg);
+        wln!(self, "  pop {}", arg);
         self.depth -= 1;
     }
 
     fn addr(&mut self, expr: &ExprNode) {
         match &expr.kind {
             ExprKind::Var(data) => {
+                let data = data.upgrade().unwrap();
                 let data = data.borrow();
-                match data.kind {
+                match &data.kind {
                     BindingKind::LocalVar { stack_offset } => {
-                        println!("  lea {}(%rbp), %rax", stack_offset);
+                        wln!(self, "  lea {}(%rbp), %rax", stack_offset);
                     }
-                    BindingKind::GlobalVar => {
-                        println!("  lea {}(%rip), %rax", String::from_utf8_lossy(&data.name));
+                    BindingKind::GlobalVar {..} => {
+                        wln!(self, "  lea {}(%rip), %rax", ascii(&data.name));
                     }
                     _ => panic!("Unsupported")
                 }
             },
             ExprKind::Deref(expr) => {
                 self.expr(expr);
+            },
+            ExprKind::Comma(exprs) => {
+                let mut it = exprs.iter().peekable();
+                while let Some(expr) = it.next() {
+                    if it.peek().is_none() {
+                        self.addr(expr);
+                    }
+                    else {
+                        self.expr(expr);
+                    }
+                }
+            },
+            ExprKind::MemberAccess(expr, member) => {
+                self.addr(expr);
+                wln!(self, "  add ${}, %rax", member.upgrade().unwrap().offset);
             }
-            _ => self.error_at(expr.offset, "not an lvalue")
+            _ => self.ctx.error_at(&expr.loc, "not an lvalue")
         };
     }
 
@@ -327,6 +494,72 @@ impl<'a> Codegen<'a> {
     }
 }
 
-fn align_to(n: i64, align: i64) -> i64 {
-    ((n + align - 1) / align) * align
+fn data_reg(ty: &Rc<Ty>) -> &str {
+    match ty.kind {
+        TyKind::Long | TyKind::Ptr(_) | TyKind::Array(_, _) => "%rdi",
+        _ => "%edi",
+    }
+}
+
+fn acc_reg(ty: &Rc<Ty>) -> &str {
+    match ty.kind {
+        TyKind::Long | TyKind::Ptr(_) | TyKind::Array(_, _) => "%rax",
+        _ => "%eax",
+    }
+}
+
+// Casting
+
+enum CastType {
+    I8 = 0, I16, I32, I64
+}
+
+lazy_static! {
+    static ref CAST_TABLE: [[Option<&'static str>;4];4] = {
+        let i32i8  = Some("movsbl %al, %eax");
+        let i32i16 = Some("movswl %ax, %eax");
+        let i32i64 = Some("movsxd %eax, %rax");
+        [
+            [  None,   None, None, i32i64],
+            [ i32i8,   None, None, i32i64],
+            [ i32i8, i32i16, None, i32i64],
+            [ i32i8, i32i16, None,   None],
+        ]
+    };
+}
+
+fn to_cast_type(ty: &Ty) -> CastType {
+    use CastType::*;
+    match ty.kind {
+        TyKind::Char => I8,
+        TyKind::Short => I16,
+        TyKind::Int => I32,
+        _ => I64
+    }
+}
+
+// Alignment
+
+pub trait Alignable : Display + Copy + Add<Output=Self> + Sub<Output=Self> + Div<Output=Self> + Mul<Output=Self> {
+    fn one() -> Self;
+    fn is_zero(self) -> bool;
+}
+
+impl Alignable for i64 {
+    fn one() -> Self { 1 }
+    fn is_zero(self) -> bool { return self == 0 }
+}
+
+impl Alignable for usize {
+    fn one() -> Self { 1 }
+    fn is_zero(self) -> bool { return self == 0 }
+}
+
+// Round up `n` to the nearest multiple of `align`. For instance,
+// align_to(5, 8) returns 8 and align_to(11, 8) returns 16.
+pub fn align_to<T: Alignable>(n: T, align: T) -> T {
+    if n.is_zero() {
+        return n;
+    }
+    ((n + align - Alignable::one()) / align) * align
 }
